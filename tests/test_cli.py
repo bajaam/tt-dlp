@@ -84,6 +84,49 @@ class ConfigurationTests(unittest.TestCase):
 
 
 class DownloaderTests(unittest.TestCase):
+    def test_empty_authenticated_scan_retries_without_cookies(self):
+        args = tt.parse_args(["example"])
+        args.cookies = "configured-cookies.txt"
+        args, _ = tt.prepare_run(args)
+        downloader = object.__new__(tt.TikTokDownloader)
+        downloader.args = args
+        downloader.opener = object()
+        downloader.anonymous_opener = object()
+        authenticated_opener = downloader.opener
+        calls = []
+
+        def iter_posts(sec_uid):
+            calls.append((sec_uid, downloader.opener))
+            if downloader.opener is downloader.anonymous_opener:
+                yield {"id": "123"}
+
+        downloader._iter_posts = iter_posts
+        posts = downloader._collect_posts(
+            "creator-id", public_embed_has_posts=True, is_private=False
+        )
+
+        self.assertEqual(posts, [{"id": "123"}])
+        self.assertEqual(len(calls), 2)
+        self.assertIs(downloader.opener, authenticated_opener)
+
+    def test_private_profile_does_not_retry_without_cookies(self):
+        args = tt.parse_args(["example"])
+        args.cookies = "configured-cookies.txt"
+        args, _ = tt.prepare_run(args)
+        downloader = object.__new__(tt.TikTokDownloader)
+        downloader.args = args
+        downloader.opener = object()
+        downloader.anonymous_opener = object()
+        calls = []
+        downloader._iter_posts = lambda sec_uid: calls.append(sec_uid) or iter(())
+
+        posts = downloader._collect_posts(
+            "creator-id", public_embed_has_posts=True, is_private=True
+        )
+
+        self.assertEqual(posts, [])
+        self.assertEqual(calls, ["creator-id"])
+
     def test_empty_cursor_probe_is_not_counted_as_profile_page(self):
         args = tt.parse_args(["example", "--dry-run"])
         args, _ = tt.prepare_run(args)
