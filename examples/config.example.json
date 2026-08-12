@@ -1,0 +1,10 @@
+{
+  "output": "~/Downloads/TikTok",
+  "cookies_file": "",
+  "queue_file": "queue.example.txt",
+  "queue": [],
+  "sleep": 2.0,
+  "limit": 0,
+  "overwrite": false,
+  "dry_run": false
+}

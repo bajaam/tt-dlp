@@ -1,0 +1,5 @@
+# Example queue: add one username, profile URL, video URL, or photo URL per line.
+# Blank lines and lines beginning with # are ignored.
+#
+# profile_one
+# https://www.tiktok.com/@profile_two
