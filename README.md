@@ -43,13 +43,13 @@ Download or clone this repository, open a terminal inside it, and run:
 ### Windows
 
 ```powershell
-py -m pip install .
+py -m pip install "git+https://github.com/bajaam/tt-dlp.git"
 ```
 
 ### Linux or macOS
 
 ```bash
-python3 -m pip install --user .
+python3 -m pip install --user "git+https://github.com/bajaam/tt-dlp.git"
 ```
 
 You can then run:
