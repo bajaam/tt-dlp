@@ -43,13 +43,13 @@ Download or clone this repository, open a terminal inside it, and run:
 ### Windows
 
 ```powershell
-py -m pip install "git+https://github.com/bajaam/tt-dlp.git"
+py -m pip install .
 ```
 
 ### Linux or macOS
 
 ```bash
-python3 -m pip install --user "git+https://github.com/bajaam/tt-dlp.git"
+python3 -m pip install --user .
 ```
 
 You can then run:
@@ -107,10 +107,13 @@ https://www.tiktok.com/@profile_two
 https://www.tiktok.com/@someone/video/1234567890
 ```
 
-Blank lines and lines beginning with `#` are ignored. Running `tt-dlp` in that
-directory loads `config.json`, which loads `queue.txt`. If no config is found
-and no command-line targets are supplied, `tt-dlp` asks for its path. Clean
-examples are provided under [`examples/`](examples/).
+Blank lines and lines beginning with `#` are ignored. A plain `tt-dlp` command
+automatically checks the current directory and `~/.config/tt-dlp/config.json`.
+It also supports `%APPDATA%/tt-dlp/config.json` on Windows,
+`$XDG_CONFIG_HOME/tt-dlp/config.json` on Linux, and the user Application
+Support folder on macOS. Set `TT_DLP_CONFIG` to choose another automatic path.
+If no config is found and no targets are supplied, `tt-dlp` asks for its path.
+Clean examples are provided under [`examples/`](examples/).
 
 Available `config.json` settings:
 
