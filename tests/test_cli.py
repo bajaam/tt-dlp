@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from urllib.error import HTTPError
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -12,6 +13,26 @@ from tt_dlp import cli as tt
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_user_config_is_discovered_without_prompt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            config_dir = home / ".config" / "tt-dlp"
+            config_dir.mkdir(parents=True)
+            config_path = config_dir / "config.json"
+            config_path.write_text("{}", encoding="utf-8")
+            args = tt.parse_args([])
+
+            with patch.object(tt.Path, "home", return_value=home):
+                discovered = tt._config_path(args)
+
+            self.assertEqual(discovered, config_path)
+
+    def test_environment_config_has_highest_priority(self):
+        args = tt.parse_args([])
+        with patch.dict(tt.os.environ, {"TT_DLP_CONFIG": "custom.json"}):
+            discovered = tt._config_path(args)
+        self.assertEqual(discovered, Path("custom.json"))
+
     def test_init_config_creates_named_config_and_queue(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "settings.json"

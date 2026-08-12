@@ -621,7 +621,41 @@ def _config_path(args):
     if args.targets or args.queue_file:
         return None
 
-    default = Path.cwd() / "config.json"
+    configured = os.environ.get("TT_DLP_CONFIG")
+    if configured:
+        return Path(configured).expanduser()
+
+    candidates = [
+        Path.cwd() / "config.json",
+        Path.home() / ".config" / "tt-dlp" / "config.json",
+    ]
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config:
+        candidates.append(Path(xdg_config) / "tt-dlp" / "config.json")
+    app_data = os.environ.get("APPDATA")
+    if app_data:
+        candidates.append(Path(app_data) / "tt-dlp" / "config.json")
+    if sys.platform == "darwin":
+        candidates.append(
+            Path.home() / "Library" / "Application Support"
+            / "tt-dlp" / "config.json"
+        )
+
+    # Prefer a project-specific config in the current directory, then common
+    # per-user config locations. Return immediately when one already exists so
+    # a plain `tt-dlp` command stays non-interactive.
+    seen = set()
+    unique_candidates = []
+    for candidate in candidates:
+        candidate = candidate.expanduser()
+        key = os.path.normcase(os.path.abspath(candidate))
+        if key not in seen:
+            seen.add(key)
+            unique_candidates.append(candidate)
+            if candidate.is_file():
+                return candidate
+
+    default = unique_candidates[1]
     if sys.stdin.isatty():
         try:
             entered = input(f"Config file [{default}]: ").strip()
@@ -638,7 +672,8 @@ def _load_config(path):
     if not path.is_file():
         raise TikTokError(
             f"Config file not found: {path}\n"
-            "Run 'tt-dlp --init-config' or pass profiles directly."
+            "Run 'tt-dlp --init-config ~/.config/tt-dlp/config.json' "
+            "or pass profiles directly."
         )
     try:
         with path.open("r", encoding="utf-8") as file:
