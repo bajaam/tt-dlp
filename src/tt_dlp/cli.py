@@ -191,9 +191,8 @@ class TikTokDownloader:
 
     def _authenticated_profile_id(self):
         """Find this profile's secUid in authenticated profile-page JSON."""
-        response = self._request(self.profile_url)
-        page = response.read().decode("utf-8", "replace")
-        response.close()
+        with self._request(self.profile_url) as response:
+            page = response.read().decode("utf-8", "replace")
 
         script_values = re.findall(
             r"<script[^>]*>(.*?)</script>", page,
@@ -253,9 +252,8 @@ class TikTokDownloader:
 
         if SHORT_RE.match(value):
             url = value if value.startswith("http") else "https://" + value
-            response = self._request(url, stream=True)
-            value = response.geturl()
-            response.close()
+            with self._request(url, stream=True) as response:
+                value = response.geturl()
 
         match = PROFILE_RE.match(value)
         if not match:
@@ -266,7 +264,7 @@ class TikTokDownloader:
 
     def _request(self, url, *, stream=False, headers=None, attempts=4):
         del stream  # urllib responses are streamed until read.
-        last_error = None
+        last_error = "unknown network error"
         for attempt in range(1, attempts + 1):
             try:
                 request_headers = dict(self.default_headers)
@@ -279,8 +277,14 @@ class TikTokDownloader:
                 message = f"HTTP {response.getcode()} for {response.geturl()}"
                 last_error = TikTokError(message)
                 response.close()
-            except (HTTPError, URLError, TimeoutError, OSError) as exc:
-                last_error = exc
+            except HTTPError as exc:
+                # HTTPError is also a file-like response. Close it here and
+                # retain only its message so its finalizer cannot encounter a
+                # half-closed socket later (notably on Python 3.14).
+                last_error = f"HTTP {exc.code} for {exc.geturl()}"
+                exc.close()
+            except (URLError, TimeoutError, OSError) as exc:
+                last_error = str(exc)
 
             if attempt < attempts:
                 delay = max(self.args.sleep, min(3 * attempt, 12))
@@ -293,9 +297,8 @@ class TikTokDownloader:
         raise TikTokError(str(last_error))
 
     def _embed_data(self, path):
-        response = self._request(ROOT + path)
-        page = response.read().decode("utf-8", "replace")
-        response.close()
+        with self._request(ROOT + path) as response:
+            page = response.read().decode("utf-8", "replace")
 
         match = STATE_RE.search(page)
         if not match:
@@ -382,13 +385,14 @@ class TikTokDownloader:
                 api_url = (
                     ROOT + "/api/creator/item_list/?" + urlencode(params)
                 )
-                response = self._request(
+                with self._request(
                     api_url,
                     headers={"Referer": self.profile_url},
                     attempts=1,
-                )
-                data = json.loads(response.read().decode("utf-8", "replace"))
-                response.close()
+                ) as response:
+                    data = json.loads(
+                        response.read().decode("utf-8", "replace")
+                    )
                 status = data.get("statusCode", data.get("status_code", 0))
                 if status:
                     raise TikTokError(
@@ -491,16 +495,15 @@ class TikTokDownloader:
                     # TikTok usually supplies several equivalent CDN URLs.
                     # A 403 from one URL should immediately fall through to
                     # the next URL instead of retrying the rejected one.
-                    response = self._request(
+                    with self._request(
                         url, stream=True, headers=headers, attempts=1
-                    )
-                    with temporary.open("wb") as output:
-                        while True:
-                            chunk = response.read(256 * 1024)
-                            if not chunk:
-                                break
-                            output.write(chunk)
-                    response.close()
+                    ) as response:
+                        with temporary.open("wb") as output:
+                            while True:
+                                chunk = response.read(256 * 1024)
+                                if not chunk:
+                                    break
+                                output.write(chunk)
                     os.replace(temporary, destination)
                     self.last_download_at = time.monotonic()
                     return 0
