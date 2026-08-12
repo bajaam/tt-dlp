@@ -19,6 +19,7 @@ uses only Python's standard library.
 - Skips files that already exist
 - Retries the current file until it succeeds or you press `Ctrl+C`
 - Supports an optional Netscape-format cookies file
+- Falls back to a public scan when cookies hide a public profile's posts
 - Uses `.part` files to avoid treating interrupted downloads as complete
 
 Example filenames:

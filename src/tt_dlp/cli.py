@@ -67,6 +67,9 @@ class TikTokDownloader:
         }
         self.cookie_jar = self._load_cookies(args.cookies)
         self.opener = build_opener(HTTPCookieProcessor(self.cookie_jar))
+        self.anonymous_opener = build_opener(
+            HTTPCookieProcessor(CookieJar())
+        )
         self.device_id = str(random.randint(
             7_250_000_000_000_000_000,
             7_325_099_899_999_994_577,
@@ -156,7 +159,11 @@ class TikTokDownloader:
         # Finish reading every available profile page before starting any
         # media download. This keeps discovery separate from downloading and
         # gives us a complete queue up front.
-        posts = list(self._iter_posts(sec_uid))
+        posts = self._collect_posts(
+            sec_uid,
+            public_embed_has_posts=bool(recent),
+            is_private=is_private,
+        )
         print(f"Profile scan complete: {len(posts)} posts found.")
 
         if target_id:
@@ -188,6 +195,31 @@ class TikTokDownloader:
             f"{failed} failed"
         )
         return 1 if failed else 0
+
+    def _collect_posts(self, sec_uid, *, public_embed_has_posts, is_private):
+        posts = list(self._iter_posts(sec_uid))
+        if (
+            posts
+            or not self.args.cookies
+            or is_private
+            or not public_embed_has_posts
+        ):
+            return posts
+
+        # A signed-in TikTok session can occasionally return an empty creator
+        # list for a public account even though its public embed contains
+        # posts. Retry only the profile scan without cookies; restore the
+        # authenticated opener before downloading media.
+        print(
+            "Authenticated profile scan returned no posts; "
+            "retrying public scan without cookies..."
+        )
+        authenticated_opener = self.opener
+        try:
+            self.opener = self.anonymous_opener
+            return list(self._iter_posts(sec_uid))
+        finally:
+            self.opener = authenticated_opener
 
     def _authenticated_profile_id(self):
         """Find this profile's secUid in authenticated profile-page JSON."""
@@ -804,6 +836,13 @@ def initialize_config(filename):
 
 def main(argv=None):
     try:
+        # Windows consoles may use a legacy encoding even though TikTok
+        # descriptions are Unicode. Replace only unrepresentable terminal
+        # glyphs; filenames on disk retain their original Unicode text.
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure:
+                reconfigure(errors="replace")
         parsed = parse_args(argv)
         if parsed.init_config:
             return initialize_config(parsed.init_config)
