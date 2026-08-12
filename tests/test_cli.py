@@ -1,8 +1,10 @@
 import json
+import io
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -60,6 +62,29 @@ class ConfigurationTests(unittest.TestCase):
 
 
 class DownloaderTests(unittest.TestCase):
+    def test_failed_http_response_is_closed_immediately(self):
+        args = tt.parse_args(["example"])
+        args, _ = tt.prepare_run(args)
+        downloader = tt.TikTokDownloader(args)
+        body = io.BytesIO(b"Forbidden")
+        error = HTTPError(
+            "https://www.tiktok.com/test", 403, "Forbidden", {}, body
+        )
+
+        class FailingOpener:
+            @staticmethod
+            def open(request, timeout):
+                del request, timeout
+                raise error
+
+        downloader.opener = FailingOpener()
+        with self.assertRaisesRegex(tt.TikTokError, "HTTP 403"):
+            downloader._request(
+                "https://www.tiktok.com/test", attempts=1
+            )
+
+        self.assertTrue(body.closed)
+
     def test_recursive_profile_id_lookup(self):
         args = tt.parse_args(["@example"])
         args, _ = tt.prepare_run(args)
