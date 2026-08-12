@@ -3,6 +3,7 @@ import io
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from urllib.error import HTTPError
 from unittest.mock import patch
@@ -83,6 +84,27 @@ class ConfigurationTests(unittest.TestCase):
 
 
 class DownloaderTests(unittest.TestCase):
+    def test_empty_cursor_probe_is_not_counted_as_profile_page(self):
+        args = tt.parse_args(["example", "--dry-run"])
+        args, _ = tt.prepare_run(args)
+        downloader = tt.TikTokDownloader(args)
+        responses = iter((
+            {"itemList": [], "hasMorePrevious": True},
+            {
+                "itemList": [{"id": "123", "createTime": "1770000000"}],
+                "hasMorePrevious": False,
+            },
+        ))
+        downloader._request_api = lambda params: next(responses)
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            posts = list(downloader._iter_posts("creator-id"))
+
+        self.assertEqual([post["id"] for post in posts], ["123"])
+        self.assertIn("Profile page 1: 1 new posts (1 total)", output.getvalue())
+        self.assertNotIn("Profile page 1: 0", output.getvalue())
+
     def test_failed_http_response_is_closed_immediately(self):
         args = tt.parse_args(["example"])
         args, _ = tt.prepare_run(args)
