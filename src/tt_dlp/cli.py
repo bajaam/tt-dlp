@@ -354,7 +354,6 @@ class TikTokDownloader:
                 ),
                 "webcast_language": "en",
             }
-            print(f"Reading profile page {page} ({len(seen)} posts found)...")
             data = self._request_api(params)
             items = data.get("itemList") or ()
             new_items = 0
@@ -366,6 +365,13 @@ class TikTokDownloader:
                 new_items += 1
                 yield item
 
+            if new_items:
+                print(
+                    f"Profile page {page}: {new_items} new posts "
+                    f"({len(seen)} total)"
+                )
+                page += 1
+
             if not data.get("hasMorePrevious"):
                 break
 
@@ -376,7 +382,6 @@ class TikTokDownloader:
             if not new_items or next_cursor >= cursor:
                 next_cursor = cursor - 7 * 86_400_000
             cursor = next_cursor
-            page += 1
 
     def _request_api(self, params):
         last_error = None
@@ -400,6 +405,16 @@ class TikTokDownloader:
                         or data.get("status_msg")
                         or f"TikTok API error {status}"
                     )
+                # TikTok occasionally answers a valid first cursor with an
+                # empty page and hasMorePrevious=true, then returns posts for
+                # the identical request moments later. Retry these transient
+                # empty responses before allowing pagination to move back.
+                if (
+                    not (data.get("itemList") or ())
+                    and data.get("hasMorePrevious")
+                    and attempt < 4
+                ):
+                    raise TikTokError("TikTok API returned an empty page")
                 return data
             except (OSError, ValueError, TikTokError) as exc:
                 last_error = exc

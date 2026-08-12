@@ -14,6 +14,7 @@ uses only Python's standard library.
 - Accepts multiple profiles and post URLs in one command
 - Creates and reads a persistent `config.json` and `queue.txt`
 - Scans each complete profile before downloading its media
+- Retries transient empty profile responses instead of counting a zero page
 - Downloads videos and full photo carousels
 - Skips files that already exist
 - Retries the current file until it succeeds or you press `Ctrl+C`
