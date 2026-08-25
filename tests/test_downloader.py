@@ -317,6 +317,65 @@ class MediaResponseTests(unittest.TestCase):
             self.assertEqual(client.refreshes, 2)
             sleep.assert_called_once()
 
+    def test_incomplete_photo_refresh_tracks_larger_discovered_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            expanded_partial = MediaItem(
+                post_id="123456",
+                description="expanded partial refresh",
+                image_urls=(
+                    ("https://cdn.example/one.jpg",),
+                    ("https://cdn.example/two.jpg",),
+                    ("https://cdn.example/three.jpg",),
+                ),
+                image_count=4,
+            )
+            expanded_complete = MediaItem(
+                post_id="123456",
+                description="expanded complete refresh",
+                image_urls=(
+                    ("https://cdn.example/one.jpg",),
+                    ("https://cdn.example/two.jpg",),
+                    ("https://cdn.example/three.jpg",),
+                    ("https://cdn.example/four.jpg",),
+                ),
+                image_count=4,
+            )
+
+            class ExpandingPhotoClient(NoNetworkClient):
+                def __init__(self):
+                    self.responses = iter((
+                        expanded_partial,
+                        expanded_complete,
+                    ))
+                    self.refreshes = 0
+
+                def media_from_embed(self, post_id, *, is_story=False):
+                    if post_id != "123456" or is_story:
+                        raise AssertionError("unexpected refresh target")
+                    self.refreshes += 1
+                    return next(self.responses)
+
+            client = ExpandingPhotoClient()
+            downloader = TikTokDownloader(
+                settings(Path(directory)), client=client
+            )
+            initial = MediaItem(
+                post_id="123456",
+                description="original metadata",
+                image_urls=(
+                    ("https://cdn.example/one.jpg",),
+                    ("https://cdn.example/two.jpg",),
+                ),
+                image_count=3,
+            )
+
+            with patch("tt_dlp.downloader.time.sleep") as sleep:
+                result = downloader._refresh_incomplete_photo(initial)
+
+            self.assertEqual(result, expanded_complete)
+            self.assertEqual(client.refreshes, 2)
+            sleep.assert_called_once()
+
 
 class DownloaderIdentityTests(unittest.TestCase):
     def test_fresh_complete_stable_target_can_have_no_current_posts(self):

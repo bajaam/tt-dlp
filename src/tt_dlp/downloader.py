@@ -525,6 +525,7 @@ class TikTokDownloader:
                 current = self.client.media_from_embed(
                     item.post_id, is_story=item.is_story
                 )
+                required_count = max(required_count, current.image_count)
                 last_error = "photo metadata still contains missing URLs"
             except TikTokError as exc:
                 last_error = exc
