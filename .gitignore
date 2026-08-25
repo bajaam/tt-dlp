@@ -1,26 +1,25 @@
+# Python build and test artifacts
 __pycache__/
 *.py[cod]
-.pytest_cache/
 *.egg-info/
+.pytest_cache/
 build/
 dist/
-config.json
-queue.txt
+
+# Virtual environments and editor settings
 .venv/
 venv/
 .idea/
 .vscode/
-*.part
+
+# Local tt-dlp state and credentials
+config.json
+queue.txt
+profiles.json
 cookies.txt
 cookies-*.txt
 www.tiktok.com_cookies.txt
-*.mp4
-*.mov
-*.webm
-*.jpg
-*.jpeg
-*.png
-*.webp
+
+# Interrupted and repository-local downloads
+*.part
 downloads/
-Download/
-Downloads/

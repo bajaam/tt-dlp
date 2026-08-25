@@ -1,5 +1,17 @@
-# Example queue: add one username, profile URL, video URL, or photo URL per line.
-# Blank lines and lines beginning with # are ignored.
+# Add one target per line. Blank lines and comments are ignored.
 #
-# profile_one
+# Username or profile URL:
+# @profile_one
 # https://www.tiktok.com/@profile_two
+#
+# Individual media:
+# https://www.tiktok.com/@profile_three/video/1234567890123456789
+# https://www.tiktok.com/@profile_three/photo/1234567890123456789
+# https://www.tiktok.com/@profile_three/story/1234567890123456789
+#
+# Rename-safe profile identifiers (generate one with tt-dlp --identify):
+# ttid:1234567890123456789:MS4wLjABAAAAExampleStableIdentifier1234567890
+# secuid:MS4wLjABAAAAExampleStableIdentifier1234567890
+#
+# A numeric ID alone works only after that profile is in profiles.json:
+# userid:1234567890123456789

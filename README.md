@@ -1,47 +1,33 @@
 # tt-dlp
 
-`tt-dlp` is a standalone, queue-based TikTok downloader for public profiles,
-individual videos, photo posts, and active stories. It can optionally load
-your own exported TikTok cookies when authenticated access is needed.
+[![Tests](https://github.com/bajaam/tt-dlp/actions/workflows/tests.yml/badge.svg)](https://github.com/bajaam/tt-dlp/actions/workflows/tests.yml)
 
-It does **not** import, install, or run `yt-dlp` or `gallery-dl`. Its runtime
-uses only Python's standard library.
+`tt-dlp` is a queue-based TikTok downloader for public profiles, individual
+videos, photo carousels, and active stories. It can remember a creator's stable
+TikTok identity, so an existing queue and output folder continue to work after
+the creator changes their username.
+
+The application is written entirely with Python's standard library. It does
+not install, import, or run `yt-dlp` or `gallery-dl`.
 
 ## Features
 
-- Runs on Windows, Linux, and macOS
-- Installs a terminal command named `tt-dlp`
-- Accepts multiple profiles and post URLs in one command
-- Creates and reads a persistent `config.json` and `queue.txt`
-- Scans each complete profile before downloading its media
-- Retries transient empty profile responses instead of counting a zero page
-- Downloads videos and full photo carousels
-- Optionally downloads active video and photo stories into `stories/`
-- Skips files that already exist
-- Retries the current file until it succeeds or you press `Ctrl+C`
-- Supports an optional Netscape-format cookies file
-- Falls back to a public scan when cookies hide a public profile's posts
-- Uses `.part` files to avoid treating interrupted downloads as complete
+- Downloads videos, full photo carousels, and optional active stories
+- Accepts profiles, media URLs, short links, and rename-safe profile IDs
+- Scans a complete profile before starting its download queue
+- Reads multiple targets from the command line, JSON config, or a text queue
+- Remembers username changes without splitting a creator's output directory
+- Skips completed files and uses `.part` files for interrupted downloads
+- Holds and retries the current media file instead of silently moving past it
+- Supports authenticated access through an optional Netscape cookies file
+- Runs on Windows, Linux, and macOS with Python 3.10 or newer
 
-Example filenames:
+TikTok's web responses are undocumented and can change without notice. A
+future TikTok change may require an update to `tt-dlp`.
 
-```text
-7671697231396998408 example description.mp4
-7671697231396998408_01 example photo post.jpg
-7671697231396998408_02 example photo post.jpg
-```
+## Installation
 
-## Requirements
-
-- Python 3.10 or newer
-- An internet connection
-
-There are no runtime packages to install. Python packaging tools are used only
-to register the `tt-dlp` command.
-
-## Install the `tt-dlp` command
-
-Download or clone this repository, open a terminal inside it, and run:
+Install the current GitHub version directly.
 
 ### Windows
 
@@ -55,86 +41,119 @@ py -m pip install "git+https://github.com/bajaam/tt-dlp.git"
 python3 -m pip install --user "git+https://github.com/bajaam/tt-dlp.git"
 ```
 
-You can then run:
+Verify the command:
 
 ```bash
+tt-dlp --version
 tt-dlp --help
 ```
 
-After installation it can also be run through Python directly:
+If the command is not on your shell's `PATH`, use the module form:
+
+```powershell
+py -m tt_dlp --help
+```
 
 ```bash
 python3 -m tt_dlp --help
 ```
 
-## Quick commands
+To install a local clone for development instead, open a terminal in the
+repository and run `python -m pip install -e .`.
 
-One profile:
+## Quick start
 
-```bash
-tt-dlp username
-```
-
-Multiple profiles/posts in one queue:
+Download a public profile:
 
 ```bash
-tt-dlp profile_one profile_two "https://www.tiktok.com/@name/video/1234567890"
+tt-dlp @profile_name
 ```
 
-Use a specific config:
+Download one video, photo post, or active story:
 
 ```bash
-tt-dlp --config config.json
+tt-dlp "https://www.tiktok.com/@profile_name/video/1234567890123456789"
 ```
 
-Use a queue file without a config:
+Preview filenames without downloading:
 
 ```bash
-tt-dlp --queue-file queue.txt
+tt-dlp --dry-run @profile_name
 ```
 
-Include each queued profile's currently active stories (cookies required):
+Include currently active stories. TikTok requires current cookies for story
+lookup, even when the profile is public:
 
 ```bash
-tt-dlp --stories username
+tt-dlp --stories --cookies /path/to/cookies.txt @profile_name
 ```
 
-Stories are saved under `~/Downloads/TikTok/username/stories/` by default.
-They keep the normal ID-first filename format, for example
-`7677688392670301462 story.mp4`.
+## Rename-safe profile targets
 
-## Persistent queue and config
+TikTok usernames can change. `tt-dlp` records a profile's numeric user ID,
+opaque `secUid`, current username, previous aliases, and original output folder
+in a small `profiles.json` file. Future runs can follow the same creator while
+keeping all downloads together.
 
-Create your personal config and queue once:
+Generate the recommended stable target:
+
+```bash
+tt-dlp --identify @profile_name
+```
+
+The command prints a value that can be placed directly in `queue.txt`:
+
+```text
+ttid:1234567890123456789:MS4wLjABAAAAExampleStableIdentifier1234567890
+```
+
+Supported stable forms:
+
+| Form | Use |
+| --- | --- |
+| `ttid:<userId>:<secUid>` | Recommended. Carries both IDs needed for posts and stories. |
+| `secuid:<secUid>` | Rename-safe post lookup when the opaque ID is already known. |
+| `userid:<userId>` | Works only when that numeric ID is already mapped in `profiles.json`. |
+
+TikTok's profile-post endpoint does not resolve an unknown numeric user ID by
+itself, which is why `ttid:` is preferred over `userid:`. The profile store is
+not a cookie or password file, but it is machine-managed and normally should
+not be edited by hand. Deleting it resets remembered aliases and folder names;
+downloaded media is not removed.
+
+By default, the profile store is `profiles.json` beside an active config file,
+or in the per-user `tt-dlp` config directory when no config is loaded. Choose a
+different file with:
+
+```bash
+tt-dlp --profile-store /path/to/profiles.json @profile_name
+```
+
+The equivalent config setting is `"identity_file": "profiles.json"`.
+
+## Persistent config and queue
+
+Create a starter `config.json` and `queue.txt` in the standard per-user
+`tt-dlp` config folder:
 
 ```bash
 tt-dlp --init-config
 ```
 
-This creates `config.json` and `queue.txt` in the current directory. Edit
-`queue.txt` and add one target per line:
+You can also choose any config location, including the current directory:
 
-```text
-profile_one
-https://www.tiktok.com/@profile_two
-https://www.tiktok.com/@someone/video/1234567890
+```bash
+tt-dlp --init-config ./config.json
 ```
 
-Blank lines and lines beginning with `#` are ignored. A plain `tt-dlp` command
-automatically checks the current directory and `~/.config/tt-dlp/config.json`.
-It also supports `%APPDATA%/tt-dlp/config.json` on Windows,
-`$XDG_CONFIG_HOME/tt-dlp/config.json` on Linux, and the user Application
-Support folder on macOS. Set `TT_DLP_CONFIG` to choose another automatic path.
-If no config is found and no targets are supplied, `tt-dlp` asks for its path.
-Clean examples are provided under [`examples/`](examples/).
-
-Available `config.json` settings:
+Example configuration:
 
 ```json
 {
   "output": "~/Downloads/TikTok",
   "cookies_file": "",
   "queue_file": "queue.txt",
+  "identity_file": "profiles.json",
   "queue": [],
   "sleep": 2.0,
   "limit": 0,
@@ -144,94 +163,142 @@ Available `config.json` settings:
 }
 ```
 
-- `output`: base folder; each profile gets its own subfolder
-- `cookies_file`: optional path to an exported Netscape `cookies.txt`
-- `queue_file`: optional persistent text queue
-- `queue`: targets stored directly inside the JSON config
-- `sleep`: minimum delay between media downloads
-- `limit`: maximum posts per profile after the complete scan; `0` means all
-- `overwrite`: replace existing completed files when `true`
-- `dry_run`: scan and show filenames without downloading when `true`
-- `stories`: include currently active stories when `true`; requires cookies
+| Setting | Meaning |
+| --- | --- |
+| `output` | Base download directory; each creator gets a stable subdirectory. |
+| `cookies_file` | Optional Netscape-format TikTok cookies file. |
+| `queue_file` | Text file containing one target per line. |
+| `identity_file` | Machine-managed profile identity and rename store. |
+| `queue` | Optional JSON list of targets. |
+| `sleep` | Minimum delay in seconds between media downloads. |
+| `limit` | Maximum regular posts per profile after scanning; `0` means all. |
+| `overwrite` | Replace completed files when `true`. |
+| `dry_run` | Show planned filenames without downloading when `true`. |
+| `stories` | Include currently active stories when `true`; cookies required. |
 
-Relative paths in a config are resolved from the config file's directory.
-Command-line targets, the JSON queue, and the text queue are combined in order;
-duplicates are removed.
+Relative paths inside the config resolve from the config file's directory.
+Relative paths passed on the command line resolve from the current directory.
+Invalid setting types are rejected, and unknown setting names produce a
+warning instead of being silently applied.
+
+With no `--config`, `tt-dlp` checks the current directory and normal per-user
+config locations, including `~/.config/tt-dlp`, `%APPDATA%/tt-dlp` on Windows,
+and Application Support on macOS. Set `TT_DLP_CONFIG` to choose the automatic
+config path explicitly.
+
+Explicit command-line targets still inherit settings such as output, cookies,
+sleep, and stories from the auto-discovered config. They replace the config's
+persistent queue for that run. An explicit `--queue-file` behaves the same way.
+When there are no explicit targets, the JSON `queue` and configured
+`queue_file` are combined in order and duplicates are removed.
+
+## Queue format
+
+Add one target per line. Blank lines and lines beginning with `#` are ignored.
+
+```text
+# Usernames and profiles
+@profile_one
+https://www.tiktok.com/@profile_two
+
+# Individual media
+https://www.tiktok.com/@profile_three/video/1234567890123456789
+https://www.tiktok.com/@profile_three/photo/1234567890123456789
+https://www.tiktok.com/@profile_three/story/1234567890123456789
+
+# Rename-safe identity
+ttid:1234567890123456789:MS4wLjABAAAAExampleStableIdentifier1234567890
+```
+
+Run an explicit queue file with:
+
+```bash
+tt-dlp --queue-file /path/to/queue.txt
+```
+
+See [`examples/queue.example.txt`](examples/queue.example.txt) and
+[`examples/config.example.json`](examples/config.example.json) for clean
+templates.
 
 ## Cookies and private profiles
 
-Cookies are optional for public content. For authenticated access:
+Cookies are optional for ordinary public content. For authenticated access:
 
-1. Sign in to TikTok in your browser.
+1. Sign in to TikTok in a browser.
 2. Export TikTok cookies in Netscape `cookies.txt` format.
-3. Set `cookies_file` in `config.json`, or run:
+3. Set `cookies_file` in the config or pass `--cookies`.
 
 ```bash
-tt-dlp --cookies /path/to/cookies.txt username
+tt-dlp --cookies /path/to/cookies.txt @profile_name
 ```
 
-For a private profile, the cookies must belong to an account that is already
-allowed to view that profile. Cookies cannot bypass privacy controls, approval,
-age gates, regional restrictions, or removed content. TikTok may still block
-authenticated web requests, so private-profile support cannot be guaranteed.
+For a private profile, the cookies must belong to an account that TikTok has
+already allowed to view it. Cookies cannot bypass privacy controls, approval,
+age gates, regional restrictions, or removed content. Private-profile access
+is not guaranteed because TikTok may reject authenticated web requests.
 
 Cookie files contain sign-in secrets. Never share or commit them. Common cookie
-filenames are excluded by this project's `.gitignore`.
+filenames are excluded by this repository's `.gitignore`.
 
-TikTok's web story lookup is authenticated even for public profiles. To use
-`--stories` or `"stories": true`, configure a current cookies file. Only active,
-unexpired stories are returned. Viewing permissions are still enforced by
-TikTok, and story downloads do not send a view-report request.
+## Output and filenames
 
-## Other options
-
-```text
--c, --config FILE       Load JSON configuration
---init-config [FILE]    Create a config and queue
--o, --output FOLDER     Set the base output folder
---cookies FILE          Load Netscape-format TikTok cookies
---queue-file FILE       Add targets from a text file
---limit NUMBER          Limit posts per profile after scanning (0 = all)
---sleep SECONDS         Minimum delay between media downloads
---overwrite             Replace existing files
---dry-run               Scan and show filenames without downloading
---stories               Also download active stories (requires cookies)
---no-stories            Override and disable stories from config
-```
-
-## How it works
-
-`tt-dlp` reads TikTok's web embed/profile data to identify a creator, collects
-posts from TikTok's creator item-list response, and downloads the media URLs
-provided for those posts. When enabled, it separately reads TikTok's active
-story ID list and resolves each story through its embed metadata before any
-download begins. TikTok can change these undocumented responses at any time,
-which may require this project to be updated.
-
-## Project layout
+The default output root is `~/Downloads/TikTok`. Regular posts are placed in a
+stable creator directory and stories in its `stories/` subdirectory. A saved
+directory does not change when the creator changes username.
 
 ```text
-tt-dlp/
-├── examples/           Safe example config and queue
-├── src/tt_dlp/         Installable Python package
-├── tests/              Standard-library unit tests
-├── LICENSE
-├── README.md
-└── pyproject.toml      Package metadata and tt-dlp command
+TikTok/
+└── profile_name/
+    ├── 7671697231396998408 example description.mp4
+    ├── 7671697231396998409_01 example photo post.jpg
+    ├── 7671697231396998409_02 example photo post.jpg
+    └── stories/
+        └── 7671697231396998410 story.mp4
 ```
 
-Run the test suite from the repository root:
+Existing completed filenames are skipped unless `--overwrite` is used.
+Interrupted transfers remain as `.part` files and are not treated as complete.
+
+## Command reference
+
+```text
+-c, --config FILE        Load a JSON config file
+--init-config [FILE]     Create a config and queue
+-o, --output DIRECTORY  Set the base output directory
+--cookies FILE           Load Netscape-format TikTok cookies
+--queue-file FILE        Use targets from a text file
+--profile-store FILE     Set the profile identity store
+--identify               Print a canonical stable target
+--limit NUMBER           Limit regular posts after scanning (0 = all)
+--sleep SECONDS          Set the minimum inter-download delay
+--overwrite              Replace completed files
+--dry-run                Show planned filenames without downloading
+--stories                Include active stories (requires cookies)
+--no-stories             Disable stories enabled by config
+--version                Show the installed version
+```
+
+Run `tt-dlp --help` for the authoritative help text for your installed version.
+
+## Development
+
+The project uses a standard `src/` package layout and has no runtime
+dependencies.
 
 ```bash
-python3 -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
+python -m pip wheel --no-deps --wheel-dir dist .
 ```
+
+Tests run on Python 3.10 through 3.14, with Windows and macOS smoke coverage in
+GitHub Actions. Release history is recorded in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Responsible use
 
 Download only content you own or have permission to save. You are responsible
-for following applicable copyright rules, privacy requirements, and TikTok's
-terms. This project is not affiliated with TikTok.
+for applicable copyright rules, privacy requirements, and TikTok's terms. This
+project is not affiliated with TikTok.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [`LICENSE`](LICENSE).
