@@ -262,6 +262,61 @@ class MediaResponseTests(unittest.TestCase):
             self.assertEqual(client.refreshes, [("123456", False)])
             self.assertEqual(destination.read_bytes(), b"ok")
 
+    def test_incomplete_photo_refresh_keeps_original_slide_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            partial = MediaItem(
+                post_id="123456",
+                description="partial refresh",
+                image_urls=(
+                    ("https://cdn.example/one.jpg",),
+                    ("https://cdn.example/two.jpg",),
+                ),
+                image_count=2,
+            )
+            complete = MediaItem(
+                post_id="123456",
+                description="complete refresh",
+                image_urls=(
+                    ("https://cdn.example/one.jpg",),
+                    ("https://cdn.example/two.jpg",),
+                    ("https://cdn.example/three.jpg",),
+                ),
+                image_count=3,
+            )
+
+            class RefreshingPhotoClient(NoNetworkClient):
+                def __init__(self):
+                    self.responses = iter((partial, complete))
+                    self.refreshes = 0
+
+                def media_from_embed(self, post_id, *, is_story=False):
+                    self.assert_post(post_id, is_story)
+                    self.refreshes += 1
+                    return next(self.responses)
+
+                @staticmethod
+                def assert_post(post_id, is_story):
+                    if post_id != "123456" or is_story:
+                        raise AssertionError("unexpected refresh target")
+
+            client = RefreshingPhotoClient()
+            downloader = TikTokDownloader(
+                settings(Path(directory)), client=client
+            )
+            initial = MediaItem(
+                post_id="123456",
+                description="original metadata",
+                image_urls=(("https://cdn.example/one.jpg",),),
+                image_count=3,
+            )
+
+            with patch("tt_dlp.downloader.time.sleep") as sleep:
+                result = downloader._refresh_incomplete_photo(initial)
+
+            self.assertEqual(result, complete)
+            self.assertEqual(client.refreshes, 2)
+            sleep.assert_called_once()
+
 
 class DownloaderIdentityTests(unittest.TestCase):
     def test_fresh_complete_stable_target_can_have_no_current_posts(self):

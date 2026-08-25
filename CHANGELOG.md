@@ -5,6 +5,14 @@ All notable changes to `tt-dlp` are documented here. The project follows
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-08-26
+
+### Fixed
+
+- Carousel retries now recognize TikTok embed refresh metadata under
+  `imagePostInfo.displayImages`, preventing valid photo posts from entering an
+  empty-media retry loop after an expired or rejected first URL.
+
 ## [1.3.0] - 2026-08-26
 
 ### Added
@@ -43,6 +51,7 @@ All notable changes to `tt-dlp` are documented here. The project follows
 
 - Empty authenticated scans of public profiles retry without cookies.
 
-[Unreleased]: https://github.com/bajaam/tt-dlp/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/bajaam/tt-dlp/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/bajaam/tt-dlp/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/bajaam/tt-dlp/compare/v1.1.4...v1.3.0
 [1.1.4]: https://github.com/bajaam/tt-dlp/releases/tag/v1.1.4
