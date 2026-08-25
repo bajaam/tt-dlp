@@ -83,7 +83,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--stories",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="include active stories (requires cookies)",
+        help=(
+            "include active stories for profiles (enabled by default when "
+            "cookies are available)"
+        ),
     )
     parser.add_argument(
         "--identify",

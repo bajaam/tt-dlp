@@ -8,5 +8,5 @@
   "limit": 0,
   "overwrite": false,
   "dry_run": false,
-  "stories": false
+  "stories": true
 }

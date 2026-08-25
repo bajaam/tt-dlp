@@ -29,6 +29,14 @@ INVALID_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 EXTENSION_RE = re.compile(r"[a-z0-9]{1,5}")
 
 
+class _PhotoMetadataDiscovered(Exception):
+    """Signal that a failed video URL refresh revealed a photo post."""
+
+    def __init__(self, item: MediaItem):
+        super().__init__(item.post_id)
+        self.item = item
+
+
 class TikTokDownloader:
     def __init__(
         self,
@@ -51,7 +59,7 @@ class TikTokDownloader:
                 self.client.resolve_short_url(target.short_url)
             )
 
-        cached = self.profile_store.find(target)
+        cached = None if target.post_id else self.profile_store.find(target)
         requested_username = target.username
         identity = self._initial_identity(target, cached)
         creator: dict = {}
@@ -72,14 +80,24 @@ class TikTokDownloader:
                     f"TikTok did not identify the creator of {target.post_id}"
                 )
             self._validate_target_identity(target, direct_item.author)
+            if direct_item.author.user_id or direct_item.author.sec_uid:
+                cached = self.profile_store.find(parse_target(
+                    direct_item.author.stable_target
+                ))
             identity = self._merge_identity(
-                identity,
+                cached or ProfileIdentity(username=""),
                 direct_item.author,
                 authoritative=True,
             )
 
         lookup_username = identity.username or target.username
-        if lookup_username:
+        direct_identity_complete = bool(
+            direct_item
+            and identity.username
+            and identity.user_id
+            and identity.sec_uid
+        )
+        if lookup_username and not direct_identity_complete:
             try:
                 creator = self.client.creator_data(lookup_username)
             except TikTokError:
@@ -181,7 +199,12 @@ class TikTokDownloader:
         # Numeric IDs cannot enumerate profile posts by themselves.  An active
         # story can disclose the paired secUid; otherwise the local registry or
         # a ttid/secuid target is required.
-        if not identity.sec_uid and identity.user_id and self.client.has_cookies:
+        if (
+            direct_item is None
+            and not identity.sec_uid
+            and identity.user_id
+            and self.client.has_cookies
+        ):
             story_identity = self.client.active_story_identity(
                 identity.user_id, profile_url=profile_url
             )
@@ -200,7 +223,7 @@ class TikTokDownloader:
             )
 
         posts: list[MediaItem] = []
-        if identity.sec_uid:
+        if direct_item is None and identity.sec_uid:
             posts = self.client.collect_posts(
                 identity.sec_uid,
                 profile_url=profile_url,
@@ -221,41 +244,45 @@ class TikTokDownloader:
                         identity, first_item.author, authoritative=True
                     )
             profile_url = self._profile_url(identity, target)
-        print(
-            f"Profile scan complete: {len(posts)} "
-            f"{'post' if len(posts) == 1 else 'posts'} found."
-        )
-
-        want_stories = (
-            self.settings.stories or target.media_kind == "story"
-        )
-        stories: list[MediaItem] = []
-        if want_stories:
-            if not self.client.has_cookies:
-                raise TikTokError(
-                    "TikTok story access requires a current Netscape "
-                    "cookies.txt file. Pass --cookies or set cookies_file "
-                    "in config.json."
-                )
-            if not identity.user_id:
-                raise TikTokError(
-                    "Could not resolve the profile's numeric user ID for "
-                    "story access"
-                )
-            stories = self.client.collect_stories(
-                identity, profile_url=profile_url
-            )
-            story_author = next(
-                (item.author for item in stories if item.author), None
-            )
-            if story_author:
-                identity = self._merge_identity(
-                    identity, story_author, authoritative=True
-                )
-                profile_url = self._profile_url(identity, target)
+        if direct_item is None:
             print(
-                f"Story scan complete: {len(stories)} active "
-                f"{'story' if len(stories) == 1 else 'stories'} found."
+                f"Profile scan complete: {len(posts)} "
+                f"{'post' if len(posts) == 1 else 'posts'} found."
+            )
+        else:
+            print(f"Direct media resolved: {direct_item.post_id}")
+
+        stories: list[MediaItem] = []
+        if direct_item is None and self.settings.stories:
+            if not self.client.has_cookies:
+                print(
+                    "Story scan skipped: no usable cookies were loaded. "
+                    "Pass --cookies or set cookies_file in config.json."
+                )
+            elif not identity.user_id:
+                print(
+                    "Story scan skipped: TikTok did not expose the "
+                    "profile's numeric user ID."
+                )
+            else:
+                stories = self.client.collect_stories(
+                    identity, profile_url=profile_url
+                )
+                story_author = next(
+                    (item.author for item in stories if item.author), None
+                )
+                if story_author:
+                    identity = self._merge_identity(
+                        identity, story_author, authoritative=True
+                    )
+                    profile_url = self._profile_url(identity, target)
+                print(
+                    f"Story scan complete: {len(stories)} active "
+                    f"{'story' if len(stories) == 1 else 'stories'} found."
+                )
+        elif direct_item is None:
+            print(
+                "Story scan skipped: disabled by config or --no-stories."
             )
 
         if direct_item and direct_item.author:
@@ -296,7 +323,7 @@ class TikTokDownloader:
 
         alias = None
         if requested_username:
-            if direct_item is None or cached is not None or (
+            if direct_item is None or (
                 requested_username.lower() == identity.username.lower()
             ):
                 alias = requested_username
@@ -457,6 +484,17 @@ class TikTokDownloader:
         output: Path,
         referer: str,
     ) -> DownloadSummary:
+        if not item.is_photo and not item.video_urls:
+            print(f"[metadata] Refreshing media type for {item.post_id}")
+            item = self.client.media_from_embed(
+                item.post_id, is_story=item.is_story
+            )
+            if not item.is_photo and not item.video_urls:
+                raise TikTokError(
+                    f"TikTok returned no downloadable photo or video "
+                    f"metadata for {item.post_id}"
+                )
+
         summary = DownloadSummary()
         destination_dir = output / "stories" if item.is_story else output
         description = self._clean_description(
@@ -500,14 +538,24 @@ class TikTokDownloader:
         filename = self._filename(
             item.post_id, description, "mp4"
         )
-        summary.record(self._download_media_part(
-            item,
-            output=output,
-            destination_dir=destination_dir,
-            filename=filename,
-            index=None,
-            referer=referer,
-        ))
+        try:
+            outcome = self._download_media_part(
+                item,
+                output=output,
+                destination_dir=destination_dir,
+                filename=filename,
+                index=None,
+                referer=referer,
+            )
+        except _PhotoMetadataDiscovered as discovered:
+            print(
+                f"[metadata] {item.post_id} is a photo post; switching "
+                "from MP4 to image files"
+            )
+            return self._download_item(
+                discovered.item, output=output, referer=referer
+            )
+        summary.record(outcome)
         return summary
 
     def _refresh_incomplete_photo(self, item: MediaItem) -> MediaItem:
@@ -638,6 +686,8 @@ class TikTokDownloader:
                 current = self.client.media_from_embed(
                     item.post_id, is_story=item.is_story
                 )
+                if index is None and current.is_photo:
+                    raise _PhotoMetadataDiscovered(current)
             except TikTokError as exc:
                 last_error = exc
 

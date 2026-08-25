@@ -57,6 +57,20 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(settings.sleep, 4.5)
             self.assertTrue(settings.stories)
 
+    def test_missing_stories_setting_defaults_to_enabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            self.write_config(path)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data.pop("stories")
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+            settings, _ = config_module.prepare_run(parse_args([
+                "--config", str(path), "profile",
+            ]))
+
+            self.assertTrue(settings.stories)
+
     def test_explicit_target_uses_config_defaults_without_running_saved_queue(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -239,6 +253,7 @@ class ConfigurationTests(unittest.TestCase):
             data = json.loads((root / "config.json").read_text(encoding="utf-8"))
             self.assertEqual(result, 0)
             self.assertEqual(data["identity_file"], "profiles.json")
+            self.assertTrue(data["stories"])
             self.assertEqual(queue.read_text(encoding="utf-8"), "existing-profile\n")
 
 

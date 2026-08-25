@@ -2,6 +2,7 @@ import io
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
@@ -28,6 +29,7 @@ def settings(
     dry_run: bool = False,
     overwrite: bool = False,
     identify: bool = False,
+    stories: bool = False,
 ) -> Settings:
     return Settings(
         output=output,
@@ -37,7 +39,7 @@ def settings(
         sleep=0.0,
         overwrite=overwrite,
         dry_run=dry_run,
-        stories=False,
+        stories=stories,
         identify=identify,
     )
 
@@ -150,6 +152,61 @@ class DownloadArchiveTests(unittest.TestCase):
 
 
 class MediaResponseTests(unittest.TestCase):
+    def test_unknown_media_refreshes_before_choosing_photo_filename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            class ResolvingClient(NoNetworkClient):
+                def media_from_embed(self, post_id, *, is_story=False):
+                    return MediaItem(
+                        post_id=post_id,
+                        description="resolved photo",
+                        image_urls=(("https://cdn.example/photo.jpg",),),
+                        image_count=1,
+                        is_story=is_story,
+                    )
+
+            downloader = TikTokDownloader(
+                settings(root, dry_run=True), client=ResolvingClient()
+            )
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                summary = downloader._download_item(
+                    MediaItem(post_id="123456", description="placeholder"),
+                    output=root,
+                    referer=REFERER,
+                )
+
+            self.assertEqual(summary.planned, 1)
+            self.assertIn("123456_01 resolved photo.jpg", output.getvalue())
+            self.assertNotIn(".mp4", output.getvalue())
+
+    def test_unknown_media_fails_once_without_inventing_mp4(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            class EmptyMetadataClient(NoNetworkClient):
+                def media_from_embed(self, post_id, *, is_story=False):
+                    return MediaItem(
+                        post_id=post_id,
+                        description="still empty",
+                        is_story=is_story,
+                    )
+
+            downloader = TikTokDownloader(
+                settings(root), client=EmptyMetadataClient()
+            )
+
+            with self.assertRaisesRegex(TikTokError, "no downloadable"):
+                downloader._download_item(
+                    MediaItem(post_id="123456", description="placeholder"),
+                    output=root,
+                    referer=REFERER,
+                )
+
+            self.assertEqual(list(root.iterdir()), [])
+
     def test_html_content_type_is_rejected_without_leaving_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -261,6 +318,60 @@ class MediaResponseTests(unittest.TestCase):
             ])
             self.assertEqual(client.refreshes, [("123456", False)])
             self.assertEqual(destination.read_bytes(), b"ok")
+
+    def test_failed_mp4_refresh_reclassifies_carousel_as_images(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            class PhotoRefreshClient(NoNetworkClient):
+                def media_from_embed(self, post_id, *, is_story=False):
+                    return MediaItem(
+                        post_id=post_id,
+                        description="refreshed carousel",
+                        image_urls=(("https://cdn.example/photo.jpg",),),
+                        image_count=1,
+                        is_story=is_story,
+                    )
+
+            downloader = TikTokDownloader(
+                settings(root), client=PhotoRefreshClient()
+            )
+            attempted = []
+
+            def write(url, temporary, destination, *, referer):
+                del temporary, referer
+                attempted.append((url, destination.name))
+                if url.endswith("expired.mp4"):
+                    raise TikTokError("expired")
+                destination.write_bytes(b"photo")
+
+            downloader._write_media = write
+            summary = downloader._download_item(
+                MediaItem(
+                    post_id="123456",
+                    description="wrong placeholder",
+                    video_urls=("https://cdn.example/expired.mp4",),
+                ),
+                output=root,
+                referer=REFERER,
+            )
+
+            self.assertEqual(summary.downloaded, 1)
+            self.assertEqual(attempted, [
+                (
+                    "https://cdn.example/expired.mp4",
+                    "123456 wrong placeholder.mp4",
+                ),
+                (
+                    "https://cdn.example/photo.jpg",
+                    "123456_01 refreshed carousel.jpg",
+                ),
+            ])
+            self.assertFalse((root / "123456 wrong placeholder.mp4").exists())
+            self.assertEqual(
+                (root / "123456_01 refreshed carousel.jpg").read_bytes(),
+                b"photo",
+            )
 
     def test_incomplete_photo_refresh_keeps_original_slide_count(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -378,6 +489,65 @@ class MediaResponseTests(unittest.TestCase):
 
 
 class DownloaderIdentityTests(unittest.TestCase):
+    def test_direct_story_skips_profile_scans_and_needs_no_cookie_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            class DirectStoryClient(NoNetworkClient):
+                def __init__(self):
+                    self.embed_calls = []
+
+                def media_from_embed(self, post_id, *, is_story=False):
+                    self.embed_calls.append((post_id, is_story))
+                    return MediaItem(
+                        post_id=post_id,
+                        description="active story",
+                        video_urls=("https://cdn.example/story.mp4",),
+                        author=ProfileIdentity(
+                            username="example",
+                            user_id=USER_ID,
+                            sec_uid=SEC_UID,
+                        ),
+                        is_story=is_story,
+                    )
+
+                def creator_data(self, username):
+                    return {"userInfo": {
+                        "uniqueId": username,
+                        "id": USER_ID,
+                        "secUid": SEC_UID,
+                        "privateAccount": False,
+                    }, "videoList": []}
+
+                @staticmethod
+                def identity_from_creator(creator):
+                    user = creator["userInfo"]
+                    return ProfileIdentity(
+                        username=user["uniqueId"],
+                        user_id=user["id"],
+                        sec_uid=user["secUid"],
+                    )
+
+                def collect_posts(self, *args, **kwargs):
+                    raise AssertionError("direct story scanned regular posts")
+
+                def collect_stories(self, *args, **kwargs):
+                    raise AssertionError("direct story enumerated the profile")
+
+            client = DirectStoryClient()
+            downloader = TikTokDownloader(
+                settings(root, dry_run=True, stories=True),
+                client=client,
+                profile_store=ProfileStore(None),
+            )
+
+            result = downloader.run(
+                "https://www.tiktok.com/@example/story/555555"
+            )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(client.embed_calls, [("555555", True)])
+
     def test_fresh_complete_stable_target_can_have_no_current_posts(self):
         with tempfile.TemporaryDirectory() as directory:
             class EmptyClient(NoNetworkClient):
@@ -487,6 +657,12 @@ class DownloaderIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store = ProfileStore(root / "profiles.json")
+            stale = ProfileIdentity(
+                username="old_name",
+                user_id="987654321",
+                sec_uid=OTHER_SEC_UID,
+            )
+            store.update(stale)
 
             class DirectClient(NoNetworkClient):
                 def media_from_embed(self, post_id, *, is_story=False):
@@ -502,13 +678,9 @@ class DownloaderIdentityTests(unittest.TestCase):
                     )
 
                 def creator_data(self, username):
-                    self.looked_up = username
-                    return {"userInfo": {
-                        "uniqueId": "new_owner_of_old_name",
-                        "id": "987654321",
-                        "secUid": OTHER_SEC_UID,
-                        "privateAccount": False,
-                    }}
+                    raise AssertionError(
+                        f"complete direct identity looked up {username}"
+                    )
 
                 @staticmethod
                 def identity_from_creator(creator):
@@ -520,8 +692,9 @@ class DownloaderIdentityTests(unittest.TestCase):
                     )
 
                 def collect_posts(self, sec_uid, **kwargs):
-                    self.collected_sec_uid = sec_uid
-                    return []
+                    raise AssertionError(
+                        f"direct media scanned profile {sec_uid}"
+                    )
 
             client = DirectClient()
             downloader = TikTokDownloader(
@@ -535,10 +708,11 @@ class DownloaderIdentityTests(unittest.TestCase):
             )
 
             self.assertEqual(result, 0)
-            self.assertEqual(client.collected_sec_uid, SEC_UID)
             current = store.find(parse_target(f"secuid:{SEC_UID}"))
             self.assertEqual(current.username, "current_name")
-            self.assertIsNone(store.find(parse_target("old_name")))
+            old = store.find(parse_target("old_name"))
+            self.assertEqual(old.user_id, stale.user_id)
+            self.assertEqual(old.sec_uid, stale.sec_uid)
 
     def test_profile_output_is_contained_under_root(self):
         with tempfile.TemporaryDirectory() as directory:

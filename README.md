@@ -12,7 +12,7 @@ not install, import, or run `yt-dlp` or `gallery-dl`.
 
 ## Features
 
-- Downloads videos, full photo carousels, and optional active stories
+- Downloads videos, full photo carousels, and active stories
 - Accepts profiles, media URLs, short links, and rename-safe profile IDs
 - Scans a complete profile before starting its download queue
 - Reads multiple targets from the command line, JSON config, or a text queue
@@ -81,12 +81,16 @@ Preview filenames without downloading:
 tt-dlp --dry-run @profile_name
 ```
 
-Include currently active stories. TikTok requires current cookies for story
-lookup, even when the profile is public:
+Active stories are included automatically when a usable TikTok cookies file is
+configured. TikTok requires current cookies for profile Story lookup, even when
+the profile is public:
 
 ```bash
-tt-dlp --stories --cookies /path/to/cookies.txt @profile_name
+tt-dlp --cookies /path/to/cookies.txt @profile_name
 ```
+
+Use `--no-stories` to download only regular posts. Individual shared Story
+links work directly and are recognized from TikTok's Story query markers.
 
 ## Rename-safe profile targets
 
@@ -159,7 +163,7 @@ Example configuration:
   "limit": 0,
   "overwrite": false,
   "dry_run": false,
-  "stories": false
+  "stories": true
 }
 ```
 
@@ -174,7 +178,7 @@ Example configuration:
 | `limit` | Maximum regular posts per profile after scanning; `0` means all. |
 | `overwrite` | Replace completed files when `true`. |
 | `dry_run` | Show planned filenames without downloading when `true`. |
-| `stories` | Include currently active stories when `true`; cookies required. |
+| `stories` | Scan active stories when `true` (default); skipped if no usable cookies are loaded. |
 
 Relative paths inside the config resolve from the config file's directory.
 Relative paths passed on the command line resolve from the current directory.
@@ -273,8 +277,8 @@ Interrupted transfers remain as `.part` files and are not treated as complete.
 --sleep SECONDS          Set the minimum inter-download delay
 --overwrite              Replace completed files
 --dry-run                Show planned filenames without downloading
---stories                Include active stories (requires cookies)
---no-stories             Disable stories enabled by config
+--stories                Include active stories for profile targets (default)
+--no-stories             Download regular posts without scanning stories
 --version                Show the installed version
 ```
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from .errors import TikTokError
 from .models import Target, TargetKind
@@ -16,6 +16,19 @@ USER_ID_RE = re.compile(r"\d{5,30}")
 SEC_UID_RE = re.compile(r"[A-Za-z0-9_-]{20,200}")
 POST_ID_RE = re.compile(r"\d{5,30}")
 MEDIA_KINDS = {"video", "photo", "story"}
+
+
+def _media_kind(kind: str, query_string: str) -> str:
+    query = {
+        key.lower(): values
+        for key, values in parse_qs(query_string).items()
+    }
+    if (
+        "1" in query.get("story_type", ())
+        or "40" in query.get("aweme_type", ())
+    ):
+        return "story"
+    return kind.lower()
 
 
 def validate_username(value: str) -> str:
@@ -101,6 +114,23 @@ def parse_target(value: str) -> Target:
         raise TikTokError(f"Unsupported TikTok host: {host or '(missing)'}")
 
     parts = [unquote(part) for part in parsed.path.split("/") if part]
+    if (
+        len(parts) == 2
+        and parts[0].lower() == "t"
+        and re.fullmatch(r"[A-Za-z0-9_-]+", parts[1])
+    ):
+        return Target(kind=TargetKind.SHORT_URL, raw=raw, short_url=value)
+    if (
+        len(parts) == 3
+        and parts[0].lower() == "share"
+        and parts[1].lower() in {"video", "photo"}
+    ):
+        return Target(
+            kind=TargetKind.USERNAME,
+            raw=raw,
+            post_id=validate_post_id(parts[2]),
+            media_kind=_media_kind(parts[1], parsed.query),
+        )
     if not parts or not parts[0].startswith("@"):
         raise TikTokError("Expected a TikTok profile, video, photo, or story URL")
     identifier = parts[0][1:]
@@ -129,5 +159,5 @@ def parse_target(value: str) -> Target:
         user_id=target.user_id,
         sec_uid=target.sec_uid,
         post_id=validate_post_id(parts[2]),
-        media_kind=parts[1].lower(),
+        media_kind=_media_kind(parts[1], parsed.query),
     )

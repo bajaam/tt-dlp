@@ -5,6 +5,34 @@ All notable changes to `tt-dlp` are documented here. The project follows
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-26
+
+### Added
+
+- Automatic active-Story scanning for normal profile and queued runs when a
+  usable cookies file is loaded.
+- Recognition of shared Story URLs that use `/video/<id>` with TikTok's
+  `story_type` or `aweme_type` query markers, plus `www.tiktok.com/t/...`
+  short links.
+- Pagination through TikTok's current `/api/story/item_list/` response.
+
+### Changed
+
+- Profile Story scanning now defaults to enabled. Existing configs that
+  explicitly set `"stories": false` remain disabled and receive a visible
+  skip message; remove the setting or change it to `true` to enable scanning.
+- Direct media uses the embed author's stable identity and skips unrelated
+  creator, post-list, and Story-list requests when that identity is complete.
+
+### Fixed
+
+- Canonical profile photo metadata now replaces lightweight creator-embed
+  placeholders, preventing carousels from being dispatched as MP4 files.
+- Declared photo posts ignore misleading video addresses, and a failed MP4
+  refresh that reveals a carousel immediately switches to image filenames.
+- Individual Story URLs no longer scan or depend on the creator's full post and
+  Story feeds before downloading the requested item.
+
 ## [1.3.1] - 2026-08-26
 
 ### Fixed
@@ -51,7 +79,8 @@ All notable changes to `tt-dlp` are documented here. The project follows
 
 - Empty authenticated scans of public profiles retry without cookies.
 
-[Unreleased]: https://github.com/bajaam/tt-dlp/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/bajaam/tt-dlp/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/bajaam/tt-dlp/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/bajaam/tt-dlp/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/bajaam/tt-dlp/compare/v1.1.4...v1.3.0
 [1.1.4]: https://github.com/bajaam/tt-dlp/releases/tag/v1.1.4

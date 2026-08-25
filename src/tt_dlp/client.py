@@ -28,6 +28,7 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/138.0.0.0 Safari/537.36"
 )
+SHORT_URL_USER_AGENT = "facebookexternalhit/1.1"
 STATE_RE = re.compile(
     r'<script[^>]+id=["\']__FRONTITY_CONNECT_STATE__["\'][^>]*>'
     r"(.*?)</script>",
@@ -65,7 +66,11 @@ class TikTokClient:
 
     @property
     def has_cookies(self) -> bool:
-        return self.settings.cookies is not None
+        for cookie in self.cookie_jar:
+            domain = str(cookie.domain or "").lower().lstrip(".")
+            if domain == "tiktok.com" or domain.endswith(".tiktok.com"):
+                return True
+        return False
 
     @staticmethod
     def _load_cookies(settings: Settings) -> CookieJar:
@@ -134,7 +139,10 @@ class TikTokClient:
         raise TikTokError(str(last_error))
 
     def resolve_short_url(self, url: str) -> str:
-        with self.request(url) as response:
+        with self.request(
+            url,
+            headers={"User-Agent": SHORT_URL_USER_AGENT},
+        ) as response:
             return response.geturl()
 
     def embed_data(self, path: str) -> dict:
@@ -171,10 +179,10 @@ class TikTokClient:
         if not isinstance(raw_item, dict):
             raise TikTokError(f"TikTok returned an invalid item for {post_id}")
         raw_item = dict(raw_item)
-        image_post = (
-            video_data.get("imagePostInfo")
-            or raw_item.get("imagePostInfo")
-            or raw_item.get("imagePost")
+        image_post = self._photo_metadata(
+            video_data.get("imagePostInfo"),
+            raw_item.get("imagePostInfo"),
+            raw_item.get("imagePost"),
         )
         if isinstance(image_post, dict):
             raw_item["imagePost"] = image_post
@@ -234,15 +242,16 @@ class TikTokClient:
         if author is None:
             author = cls.identity_from_author(value.get("author"))
 
-        image_post = (
-            value.get("imagePost")
-            or value.get("imagePostInfo")
-            or value.get("image_post_info")
+        image_post = cls._photo_metadata(
+            value.get("imagePost"),
+            value.get("imagePostInfo"),
+            value.get("image_post_info"),
         )
+        declared_photo = isinstance(image_post, dict)
         image_urls: list[tuple[str, ...]] = []
         image_count = 0
         title = ""
-        if isinstance(image_post, dict):
+        if declared_photo:
             title = str(image_post.get("title") or "")
             images = image_post.get("images")
             direct_addresses = False
@@ -267,8 +276,16 @@ class TikTokClient:
                     if urls:
                         image_urls.append(tuple(urls))
 
+            # TikTok sometimes declares an image post before exposing its
+            # slide list. Keep it classified as a photo so the downloader
+            # refreshes image metadata instead of inventing an MP4 job.
+            if image_count == 0:
+                image_count = 1
+
         video = value.get("video")
-        video_urls = cls.video_urls(video if isinstance(video, dict) else {})
+        video_urls = [] if declared_photo else cls.video_urls(
+            video if isinstance(video, dict) else {}
+        )
         description = str(
             value.get("desc")
             or value.get("text")
@@ -284,6 +301,21 @@ class TikTokClient:
             author=author,
             is_story=is_story,
         )
+
+    @staticmethod
+    def _photo_metadata(*values) -> dict | None:
+        candidates = [value for value in values if isinstance(value, dict)]
+        if not candidates:
+            return None
+
+        def score(value: dict) -> int:
+            for key in ("images", "displayImages"):
+                slides = value.get(key)
+                if isinstance(slides, list) and slides:
+                    return 2
+            return 1 if value else 0
+
+        return max(candidates, key=score)
 
     @staticmethod
     def _address_urls(value) -> list[str]:
@@ -378,9 +410,20 @@ class TikTokClient:
                 "TikTok's creator embed."
             )
 
+        # The creator embed can contain lightweight placeholders. Preserve
+        # its recent-post ordering, but substitute the canonical profile API
+        # item for duplicate IDs so photo posts cannot become fake MP4s.
+        canonical = {item.post_id: item for item in posts}
         merged: list[MediaItem] = []
         seen: set[str] = set()
-        for item in [*fallback, *posts]:
+        for fallback_item in fallback:
+            item = canonical.get(fallback_item.post_id)
+            if item is None:
+                item = self.media_from_embed(fallback_item.post_id)
+            if item.post_id not in seen:
+                seen.add(item.post_id)
+                merged.append(item)
+        for item in posts:
             if item.post_id not in seen:
                 seen.add(item.post_id)
                 merged.append(item)
@@ -476,7 +519,7 @@ class TikTokClient:
             cursor = next_cursor
         return posts
 
-    def _profile_params(self, sec_uid: str, cursor: int) -> dict[str, str]:
+    def _api_params(self, cursor: int) -> dict[str, str]:
         return {
             "aid": "1988",
             "app_language": "en",
@@ -488,7 +531,6 @@ class TikTokClient:
             "browser_version": "5.0 (Windows)",
             "channel": "tiktok_web",
             "cookie_enabled": "true",
-            "count": "15",
             "cursor": str(cursor),
             "device_id": self.device_id,
             "device_platform": "web_pc",
@@ -504,14 +546,30 @@ class TikTokClient:
             "region": "US",
             "screen_height": "1080",
             "screen_width": "1920",
-            "secUid": sec_uid,
-            "type": "1",
             "tz_name": "UTC",
             "verifyFp": "verify_" + "".join(
                 random.choices("0123456789abcdef", k=7)
             ),
             "webcast_language": "en",
         }
+
+    def _profile_params(self, sec_uid: str, cursor: int) -> dict[str, str]:
+        params = self._api_params(cursor)
+        params.update({
+            "count": "15",
+            "secUid": sec_uid,
+            "type": "1",
+        })
+        return params
+
+    def _story_params(self, user_id: str, cursor: int) -> dict[str, str]:
+        params = self._api_params(cursor)
+        params.update({
+            "authorId": validate_user_id(str(user_id)),
+            "count": "5",
+            "loadBackward": "false",
+        })
+        return params
 
     def _request_json_api(
         self,
@@ -562,38 +620,121 @@ class TikTokClient:
                     time.sleep(delay)
         raise TikTokError(str(last_error))
 
-    def story_ids(self, user_id: str, *, profile_url: str) -> list[str]:
+    def story_items(
+        self,
+        user_id: str,
+        *,
+        profile_url: str,
+    ) -> list[MediaItem]:
+        """Read every active Story before the download queue starts."""
         user_id = validate_user_id(str(user_id))
-        data = self._request_json_api(
-            "/api/story/user/story_list/",
-            {"aid": "1988", "authorIds": user_id},
-            profile_url=profile_url,
-            label="TikTok story API",
-        )
-        structs = data.get("storyIdListStructs", [])
-        if structs is None:
-            structs = []
-        if not isinstance(structs, list):
-            raise TikTokError("TikTok story API returned invalid data")
-        story_ids: list[str] = []
-        for entry in structs:
-            if not isinstance(entry, dict):
-                raise TikTokError("TikTok story API returned malformed data")
-            if str(entry.get("authorId") or "") != user_id:
-                continue
-            values = entry.get("storyIds", [])
-            if values is None:
-                values = []
-            if not isinstance(values, list):
-                raise TikTokError("TikTok story API returned malformed IDs")
-            for value in values:
+        cursor = 0
+        page = 1
+        empty_pages = 0
+        seen: set[str] = set()
+        stories: list[MediaItem] = []
+
+        while True:
+            if page > 100:
+                raise TikTokError(
+                    "TikTok Story pagination exceeded 100 pages; refusing "
+                    "a potentially looping partial scan"
+                )
+            data = self._request_json_api(
+                "/api/story/item_list/",
+                self._story_params(user_id, cursor),
+                profile_url=profile_url,
+                label="TikTok story API",
+            )
+            raw_items = data.get("itemList", [])
+            if raw_items is None:
+                raw_items = []
+            if not isinstance(raw_items, list):
+                raise TikTokError("TikTok story API returned invalid items")
+
+            new_items = 0
+            malformed_errors: list[str] = []
+            for raw_item in raw_items:
+                if not isinstance(raw_item, dict):
+                    malformed_errors.append("item is not a JSON object")
+                    continue
                 try:
-                    story_ids.append(validate_post_id(str(value)))
+                    item = self.normalize_item(raw_item, is_story=True)
                 except TikTokError as exc:
+                    malformed_errors.append(str(exc))
+                    continue
+                if (
+                    item.author
+                    and item.author.user_id
+                    and item.author.user_id != user_id
+                ):
                     raise TikTokError(
-                        "TikTok story API returned a malformed story ID"
-                    ) from exc
-        return list(dict.fromkeys(story_ids))
+                        f"TikTok returned story {item.post_id} for another "
+                        "creator"
+                    )
+                if item.post_id not in seen:
+                    seen.add(item.post_id)
+                    stories.append(item)
+                    new_items += 1
+
+            if malformed_errors:
+                raise TikTokError(
+                    "TikTok story API returned malformed media metadata: "
+                    + malformed_errors[0]
+                )
+
+            print(
+                f"Story page {page}: {new_items} new "
+                f"{'story' if new_items == 1 else 'stories'} "
+                f"({len(stories)} total)"
+            )
+            page += 1
+
+            has_more_value = data.get(
+                "HasMoreAfter", data.get("hasMoreAfter", False)
+            )
+            if isinstance(has_more_value, bool):
+                has_more = has_more_value
+            elif isinstance(has_more_value, int) and has_more_value in (0, 1):
+                has_more = bool(has_more_value)
+            elif (
+                isinstance(has_more_value, str)
+                and has_more_value.lower() in {"0", "1", "false", "true"}
+            ):
+                has_more = has_more_value.lower() in {"1", "true"}
+            else:
+                raise TikTokError(
+                    "TikTok Story pagination returned an invalid "
+                    "HasMoreAfter value"
+                )
+            if not has_more:
+                break
+            empty_pages = empty_pages + 1 if new_items == 0 else 0
+            if empty_pages >= 3:
+                raise TikTokError(
+                    "TikTok Story pagination returned 3 pages without new "
+                    "media; refusing a partial or looping scan"
+                )
+            try:
+                next_cursor = int(
+                    data.get("MaxCursor", data.get("maxCursor", 0)) or 0
+                )
+            except (TypeError, ValueError):
+                next_cursor = 0
+            if next_cursor <= cursor:
+                raise TikTokError(
+                    "TikTok Story pagination returned a missing or "
+                    "non-advancing cursor; refusing a partial Story scan"
+                )
+            cursor = next_cursor
+
+        return stories
+
+    def story_ids(self, user_id: str, *, profile_url: str) -> list[str]:
+        return [
+            item.post_id
+            for item in self.story_items(user_id, profile_url=profile_url)
+        ]
 
     def active_story_identity(
         self,
@@ -601,13 +742,7 @@ class TikTokClient:
         *,
         profile_url: str,
     ) -> ProfileIdentity | None:
-        for story_id in self.story_ids(user_id, profile_url=profile_url):
-            try:
-                item = self.media_from_embed(story_id, is_story=True)
-            except TikTokError as exc:
-                if self._is_gone_error(exc):
-                    continue
-                raise
+        for item in self.story_items(user_id, profile_url=profile_url):
             if item.author:
                 return item.author
         return None
@@ -618,17 +753,10 @@ class TikTokClient:
         *,
         profile_url: str,
     ) -> list[MediaItem]:
-        stories: list[MediaItem] = []
-        for story_id in self.story_ids(
+        stories = self.story_items(
             identity.user_id, profile_url=profile_url
-        ):
-            try:
-                item = self.media_from_embed(story_id, is_story=True)
-            except TikTokError as exc:
-                if self._is_gone_error(exc):
-                    print(f"[story unavailable] {story_id}: {exc}")
-                    continue
-                raise
+        )
+        for item in stories:
             if item.author:
                 if (
                     identity.user_id
@@ -638,16 +766,12 @@ class TikTokClient:
                     identity.sec_uid
                     and item.author.sec_uid
                     and identity.sec_uid != item.author.sec_uid
-                ):
+                    ):
                     raise TikTokError(
-                        f"TikTok returned story {story_id} for another creator"
+                        f"TikTok returned story {item.post_id} for another "
+                        "creator"
                     )
-            stories.append(item)
         return stories
-
-    @staticmethod
-    def _is_gone_error(error: TikTokError) -> bool:
-        return bool(re.search(r"\bHTTP (?:404|410)\b", str(error)))
 
     def authenticated_profile_identity(
         self,
