@@ -513,8 +513,13 @@ class TikTokDownloader:
     def _refresh_incomplete_photo(self, item: MediaItem) -> MediaItem:
         round_number = 0
         current = item
+        required_count = max(len(item.image_urls), item.image_count, 1)
         last_error: Exception | str = "photo metadata contains missing URLs"
-        while len(current.image_urls) < max(1, current.image_count):
+        while (
+            not current.is_photo
+            or current.image_count < required_count
+            or len(current.image_urls) < required_count
+        ):
             round_number += 1
             try:
                 current = self.client.media_from_embed(
@@ -523,7 +528,11 @@ class TikTokDownloader:
                 last_error = "photo metadata still contains missing URLs"
             except TikTokError as exc:
                 last_error = exc
-            if len(current.image_urls) >= max(1, current.image_count):
+            if (
+                current.is_photo
+                and current.image_count >= required_count
+                and len(current.image_urls) >= required_count
+            ):
                 return current
             delay = max(5.0, self.settings.sleep * 2.0)
             delay += random.uniform(0.0, 1.0)

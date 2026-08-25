@@ -54,6 +54,78 @@ class ClientNormalizationTests(unittest.TestCase):
         ))
         self.assertTrue(item.is_photo)
 
+    def test_embed_display_images_are_normalized(self):
+        item = TikTokClient.normalize_item({
+            "id": "123456",
+            "text": "embed carousel",
+            "imagePostInfo": {
+                "displayImages": [
+                    {
+                        "width": 1080,
+                        "height": 1920,
+                        "urlList": ["https://cdn.example/one.jpeg"],
+                    },
+                    {
+                        "width": 1080,
+                        "height": 1920,
+                        "urlList": ["https://cdn.example/two.jpeg"],
+                    },
+                ],
+            },
+        })
+
+        self.assertEqual(item.image_urls, (
+            ("https://cdn.example/one.jpeg",),
+            ("https://cdn.example/two.jpeg",),
+        ))
+        self.assertEqual(item.image_count, 2)
+
+    def test_media_from_embed_reads_sibling_display_images(self):
+        client = TikTokClient(settings())
+        requested = []
+
+        def embed_data(path):
+            requested.append(path)
+            return {
+                "videoData": {
+                    "itemInfos": {
+                        "id": "123456",
+                        "text": "embed carousel",
+                        "video": {},
+                    },
+                    "imagePostInfo": {
+                        "displayImages": [
+                            {
+                                "width": 1080,
+                                "height": 1920,
+                                "urlList": ["https://cdn.example/one.jpeg"],
+                            },
+                            {
+                                "width": 1080,
+                                "height": 1920,
+                                "urlList": ["https://cdn.example/two.jpeg"],
+                            },
+                        ],
+                    },
+                    "authorInfos": {
+                        "uniqueId": "example",
+                        "id": USER_ID,
+                        "secUid": SEC_UID,
+                    },
+                },
+            }
+
+        client.embed_data = embed_data
+        item = client.media_from_embed("123456")
+
+        self.assertEqual(requested, ["/embed/v2/123456"])
+        self.assertEqual(item.image_urls, (
+            ("https://cdn.example/one.jpeg",),
+            ("https://cdn.example/two.jpeg",),
+        ))
+        self.assertEqual(item.image_count, 2)
+        self.assertEqual(item.author.username, "example")
+
     def test_video_urls_are_quality_ordered_and_deduplicated(self):
         urls = TikTokClient.video_urls({
             "bitrateInfo": [

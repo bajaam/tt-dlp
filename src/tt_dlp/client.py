@@ -244,18 +244,25 @@ class TikTokClient:
         title = ""
         if isinstance(image_post, dict):
             title = str(image_post.get("title") or "")
-            images = image_post.get("images") or ()
+            images = image_post.get("images")
+            direct_addresses = False
+            if not isinstance(images, list) or not images:
+                images = image_post.get("displayImages")
+                direct_addresses = True
             if isinstance(images, list):
                 image_count = len(images)
                 for image in images:
                     if not isinstance(image, dict):
                         continue
-                    address = (
-                        image.get("imageURL")
-                        or image.get("imageUrl")
-                        or image.get("displayImage")
-                        or {}
-                    )
+                    if direct_addresses:
+                        address = image
+                    else:
+                        address = (
+                            image.get("imageURL")
+                            or image.get("imageUrl")
+                            or image.get("displayImage")
+                            or {}
+                        )
                     urls = cls._address_urls(address)
                     if urls:
                         image_urls.append(tuple(urls))
