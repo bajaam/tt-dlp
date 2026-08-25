@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tt-dlp"
 dynamic = ["version"]
-description = "Queue-based TikTok profile, video, and photo downloader"
+description = "Queue-based TikTok video, photo, and story downloader"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [{name = "tt-dlp contributors"}]
-keywords = ["tiktok", "downloader", "video", "photos"]
+keywords = ["tiktok", "downloader", "video", "photos", "stories"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
