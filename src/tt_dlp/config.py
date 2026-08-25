@@ -22,7 +22,7 @@ DEFAULT_CONFIG = {
     "limit": 0,
     "overwrite": False,
     "dry_run": False,
-    "stories": False,
+    "stories": True,
 }
 CONFIG_KEYS = frozenset(DEFAULT_CONFIG)
 
@@ -188,7 +188,9 @@ def prepare_run(args: Namespace) -> tuple[Settings, list[str]]:
     stories = (
         args.stories
         if args.stories is not None
-        else _config_bool(config, "stories", False)
+        else _config_bool(
+            config, "stories", DEFAULT_CONFIG["stories"]
+        )
     )
 
     targets = [str(value).strip() for value in args.targets if str(value).strip()]

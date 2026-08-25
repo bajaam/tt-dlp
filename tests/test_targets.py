@@ -40,6 +40,37 @@ class TargetParsingTests(unittest.TestCase):
         self.assertEqual((photo.media_kind, photo.post_id), ("photo", "1234567891"))
         self.assertEqual((story.media_kind, story.post_id), ("story", "1234567892"))
 
+    def test_shared_video_urls_with_story_markers_are_stories(self):
+        story_type = parse_target(
+            "https://www.tiktok.com/@example/video/1234567890?story_type=1"
+        )
+        aweme_type = parse_target(
+            "https://www.tiktok.com/@example/video/1234567891?aweme_type=40"
+        )
+        ordinary = parse_target(
+            "https://www.tiktok.com/@example/video/1234567892?story_type=0"
+        )
+
+        self.assertEqual(story_type.media_kind, "story")
+        self.assertEqual(aweme_type.media_kind, "story")
+        self.assertEqual(ordinary.media_kind, "video")
+
+    def test_share_media_urls_use_embed_author_identity(self):
+        video = parse_target(
+            "https://www.tiktok.com/share/video/1234567890"
+        )
+        photo_story = parse_target(
+            "https://www.tiktok.com/share/photo/1234567891?story_type=1"
+        )
+
+        self.assertEqual(video.username, "")
+        self.assertEqual((video.media_kind, video.post_id), (
+            "video", "1234567890",
+        ))
+        self.assertEqual((photo_story.media_kind, photo_story.post_id), (
+            "story", "1234567891",
+        ))
+
     def test_stable_identifier_forms_are_unambiguous(self):
         stable = parse_target(f"ttid:123456789:{SEC_UID}")
         sec_uid = parse_target(f"secuid:{SEC_UID}")
@@ -69,9 +100,14 @@ class TargetParsingTests(unittest.TestCase):
 
     def test_short_links_are_kept_for_later_resolution(self):
         target = parse_target("https://vm.tiktok.com/ZM12345/")
+        web_target = parse_target("https://www.tiktok.com/t/ZM67890/")
 
         self.assertEqual(target.kind, TargetKind.SHORT_URL)
         self.assertEqual(target.short_url, "https://vm.tiktok.com/ZM12345/")
+        self.assertEqual(web_target.kind, TargetKind.SHORT_URL)
+        self.assertEqual(
+            web_target.short_url, "https://www.tiktok.com/t/ZM67890/"
+        )
 
     def test_non_tiktok_and_lookalike_hosts_are_rejected(self):
         invalid = (
