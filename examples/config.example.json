@@ -2,6 +2,7 @@
   "output": "~/Downloads/TikTok",
   "cookies_file": "",
   "queue_file": "queue.example.txt",
+  "identity_file": "profiles.json",
   "queue": [],
   "sleep": 2.0,
   "limit": 0,
