@@ -66,6 +66,24 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(args.sleep, 3.0)
             self.assertEqual(Path(args.output), root / "downloads")
 
+    def test_stories_can_be_enabled_by_config_and_disabled_by_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            config_path.write_text(json.dumps({
+                "queue": ["example"],
+                "stories": True,
+            }), encoding="utf-8")
+
+            enabled, _ = tt.prepare_run(tt.parse_args([
+                "--config", str(config_path),
+            ]))
+            disabled, _ = tt.prepare_run(tt.parse_args([
+                "--config", str(config_path), "--no-stories",
+            ]))
+
+            self.assertTrue(enabled.stories)
+            self.assertFalse(disabled.stories)
+
     def test_netscape_cookie_file_loads(self):
         with tempfile.TemporaryDirectory() as directory:
             cookie_file = Path(directory) / "cookies.txt"
@@ -182,6 +200,73 @@ class DownloaderTests(unittest.TestCase):
         })
 
         self.assertEqual(result, "creator-id")
+
+    def test_recursive_profile_identity_includes_numeric_id(self):
+        args = tt.parse_args(["@example"])
+        args, _ = tt.prepare_run(args)
+        downloader = tt.TikTokDownloader(args)
+        downloader.username = "example"
+
+        result = downloader._find_profile_identity({
+            "nested": [{
+                "uniqueId": "example",
+                "secUid": "creator-id",
+                "id": "12345",
+            }]
+        })
+
+        self.assertEqual(result, {"secUid": "creator-id", "id": "12345"})
+
+    def test_collect_stories_resolves_ids_through_embed(self):
+        args = tt.parse_args(["example", "--stories", "--dry-run"])
+        args, _ = tt.prepare_run(args)
+        downloader = tt.TikTokDownloader(args)
+        calls = []
+        downloader._request_story_api = lambda path, params: (
+            calls.append((path, params)) or {
+                "storyIdListStructs": [{
+                    "authorId": "42",
+                    "storyIds": ["100", "101"],
+                }]
+            }
+        )
+        downloader._embed_data = lambda path: {
+            "videoData": {
+                "itemInfos": {
+                    "id": path.rsplit("/", 1)[-1],
+                    "text": "story text",
+                    "video": {"urls": ["https://cdn.example/video.mp4"]},
+                }
+            }
+        }
+
+        stories = downloader._collect_stories("42")
+
+        self.assertEqual([item["id"] for item in stories], ["100", "101"])
+        self.assertEqual(
+            stories[0]["video"]["playAddr"]["urlList"],
+            ["https://cdn.example/video.mp4"],
+        )
+        self.assertEqual(calls, [(
+            "/api/story/user/story_list/", {"authorIds": "42"}
+        )])
+
+    def test_story_photo_embed_is_kept_as_carousel(self):
+        image_post = {
+            "title": "photo story",
+            "images": [{
+                "imageURL": {"urlList": ["https://cdn.example/one.jpg"]}
+            }],
+        }
+        story = tt.TikTokDownloader._story_from_embed("100", {
+            "videoData": {
+                "itemInfos": {"id": "100", "text": ""},
+                "imagePostInfo": image_post,
+            }
+        })
+
+        self.assertEqual(story["imagePost"], image_post)
+        self.assertEqual(story["desc"], "story")
 
     def test_filename_includes_carousel_number(self):
         name = tt.TikTokDownloader._filename(

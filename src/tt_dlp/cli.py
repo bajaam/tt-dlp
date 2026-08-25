@@ -35,7 +35,7 @@ USER_AGENT = (
 )
 PROFILE_RE = re.compile(
     r"^(?:https?://)?(?:www\.)?tiktok\.com/@([\w.-]+)"
-    r"(?:/(?:video|photo)/(\d+))?",
+    r"(?:/(?:video|photo|story)/(\d+))?",
     re.IGNORECASE,
 )
 SHORT_RE = re.compile(
@@ -116,6 +116,7 @@ class TikTokDownloader:
             # when the public embed endpoint hides a private profile.
             creator = {}
         user = creator.get("userInfo") or {}
+        author_id = str(user.get("id") or "")
         if user.get("code") not in (None, 0, 200):
             raise TikTokError(
                 user.get("message") or f"TikTok rejected @{self.username}"
@@ -139,9 +140,11 @@ class TikTokDownloader:
             except TikTokError:
                 if not self.args.cookies:
                     raise
-        if not sec_uid and self.args.cookies:
-            sec_uid = self._authenticated_profile_id()
-        if not sec_uid:
+        if (not sec_uid or (self.args.stories and not author_id)) and self.args.cookies:
+            authenticated_identity = self._authenticated_profile_identity()
+            sec_uid = sec_uid or authenticated_identity.get("secUid")
+            author_id = author_id or authenticated_identity.get("id", "")
+        if not sec_uid and not (self.args.stories and author_id):
             if is_private:
                 raise TikTokError(
                     f"The supplied cookies cannot access @{self.username}. "
@@ -159,32 +162,64 @@ class TikTokDownloader:
         # Finish reading every available profile page before starting any
         # media download. This keeps discovery separate from downloading and
         # gives us a complete queue up front.
-        posts = self._collect_posts(
-            sec_uid,
-            public_embed_has_posts=bool(recent),
-            is_private=is_private,
+        posts = (
+            self._collect_posts(
+                sec_uid,
+                public_embed_has_posts=bool(recent),
+                is_private=is_private,
+            )
+            if sec_uid else []
         )
         print(f"Profile scan complete: {len(posts)} posts found.")
 
+        stories = []
+        if self.args.stories:
+            if not self.args.cookies:
+                raise TikTokError(
+                    "TikTok story access requires a current Netscape "
+                    "cookies.txt file. Pass --cookies or set cookies_file "
+                    "in config.json."
+                )
+            if not author_id:
+                raise TikTokError(
+                    f"Could not identify @{self.username} for story access"
+                )
+            stories = self._collect_stories(author_id)
+            print(
+                f"Story scan complete: {len(stories)} active "
+                f"{'story' if len(stories) == 1 else 'stories'} found."
+            )
+
         if target_id:
-            posts = [
+            matching_posts = [
                 item for item in posts
                 if str(item.get("id") or "") == target_id
             ]
-            if not posts:
+            matching_stories = [
+                item for item in stories
+                if str(item.get("id") or "") == target_id
+            ]
+            posts = matching_posts
+            stories = matching_stories
+            if not posts and not stories:
                 raise TikTokError(
-                    f"Post {target_id} was not found in "
-                    f"@{self.username}'s public posts"
+                    f"Post or active story {target_id} was not found for "
+                    f"@{self.username}"
                 )
         elif self.args.limit:
             posts = posts[:self.args.limit]
 
         downloaded = skipped = failed = examined = 0
-        print(f"Starting download queue: {len(posts)} posts.")
-        for item in posts:
+        media_queue = [(item, False) for item in posts]
+        media_queue.extend((item, True) for item in stories)
+        print(
+            f"Starting download queue: {len(posts)} posts, "
+            f"{len(stories)} stories."
+        )
+        for item, is_story in media_queue:
             examined += 1
 
-            results = self._download_post(item)
+            results = self._download_post(item, is_story=is_story)
             downloaded += results[0]
             skipped += results[1]
             failed += results[2]
@@ -221,8 +256,8 @@ class TikTokDownloader:
         finally:
             self.opener = authenticated_opener
 
-    def _authenticated_profile_id(self):
-        """Find this profile's secUid in authenticated profile-page JSON."""
+    def _authenticated_profile_identity(self):
+        """Find this profile's numeric ID and secUid in signed-in HTML."""
         with self._request(self.profile_url) as response:
             page = response.read().decode("utf-8", "replace")
 
@@ -238,42 +273,67 @@ class TikTokDownloader:
                 data = json.loads(value)
             except ValueError:
                 continue
-            sec_uid = self._find_profile_id(data)
-            if sec_uid:
-                return sec_uid
+            identity = self._find_profile_identity(data)
+            if identity:
+                return identity
 
         escaped_username = re.escape(self.username)
-        patterns = (
+        sec_uid_patterns = (
             rf'"uniqueId"\s*:\s*"{escaped_username}".{{0,3000}}?'
             rf'"secUid"\s*:\s*"([^"]+)"',
             rf'"secUid"\s*:\s*"([^"]+)".{{0,3000}}?'
             rf'"uniqueId"\s*:\s*"{escaped_username}"',
         )
-        for pattern in patterns:
+        identity = {}
+        for pattern in sec_uid_patterns:
             match = re.search(pattern, page, re.DOTALL | re.IGNORECASE)
             if match:
-                return match.group(1)
-        return None
+                identity["secUid"] = match.group(1)
+                break
+        id_patterns = (
+            rf'"uniqueId"\s*:\s*"{escaped_username}".{{0,3000}}?'
+            rf'"id"\s*:\s*"(\d+)"',
+            rf'"id"\s*:\s*"(\d+)".{{0,3000}}?'
+            rf'"uniqueId"\s*:\s*"{escaped_username}"',
+        )
+        for pattern in id_patterns:
+            match = re.search(pattern, page, re.DOTALL | re.IGNORECASE)
+            if match:
+                identity["id"] = match.group(1)
+                break
+        return identity
 
-    def _find_profile_id(self, value):
+    def _authenticated_profile_id(self):
+        """Backward-compatible helper returning only the profile secUid."""
+        return self._authenticated_profile_identity().get("secUid")
+
+    def _find_profile_identity(self, value):
         if isinstance(value, dict):
             unique_id = value.get("uniqueId") or value.get("unique_id")
-            sec_uid = value.get("secUid") or value.get("sec_uid")
-            if (
-                str(unique_id or "").lower() == self.username.lower()
-                and sec_uid
-            ):
-                return str(sec_uid)
+            if str(unique_id or "").lower() == self.username.lower():
+                identity = {}
+                sec_uid = value.get("secUid") or value.get("sec_uid")
+                author_id = value.get("id") or value.get("userId")
+                if sec_uid:
+                    identity["secUid"] = str(sec_uid)
+                if author_id:
+                    identity["id"] = str(author_id)
+                if identity:
+                    return identity
             for child in value.values():
-                found = self._find_profile_id(child)
+                found = self._find_profile_identity(child)
                 if found:
                     return found
         elif isinstance(value, list):
             for child in value:
-                found = self._find_profile_id(child)
+                found = self._find_profile_identity(child)
                 if found:
                     return found
         return None
+
+    def _find_profile_id(self, value):
+        identity = self._find_profile_identity(value)
+        return identity and identity.get("secUid")
 
     def _parse_input(self, value):
         value = value.strip()
@@ -290,7 +350,7 @@ class TikTokDownloader:
         match = PROFILE_RE.match(value)
         if not match:
             raise TikTokError(
-                "Expected @username or a TikTok profile/video/photo URL"
+                "Expected @username or a TikTok profile/video/photo/story URL"
             )
         return match.group(1), match.group(2)
 
@@ -460,13 +520,105 @@ class TikTokDownloader:
                     time.sleep(delay)
         raise TikTokError(str(last_error))
 
-    def _download_post(self, item):
+    def _request_story_api(self, path, params):
+        query = {"aid": "1988"}
+        query.update(params)
+        last_error = None
+        for attempt in range(1, 5):
+            try:
+                with self._request(
+                    ROOT + path + "?" + urlencode(query),
+                    headers={"Referer": self.profile_url},
+                    attempts=1,
+                ) as response:
+                    data = json.loads(
+                        response.read().decode("utf-8", "replace")
+                    )
+                status = data.get("statusCode", data.get("status_code", 0))
+                if status:
+                    raise TikTokError(
+                        data.get("statusMsg")
+                        or data.get("status_msg")
+                        or f"TikTok story API error {status}"
+                    )
+                return data
+            except (OSError, ValueError, TikTokError) as exc:
+                last_error = exc
+                if attempt < 4:
+                    delay = max(self.args.sleep, min(3 * attempt, 12))
+                    delay += random.uniform(0.0, 1.0)
+                    print(
+                        f"TikTok story API failed; retrying in {delay:.1f}s "
+                        f"({attempt}/4)"
+                    )
+                    time.sleep(delay)
+        raise TikTokError(str(last_error))
+
+    def _collect_stories(self, author_id):
+        data = self._request_story_api(
+            "/api/story/user/story_list/",
+            {"authorIds": str(author_id)},
+        )
+        story_ids = []
+        for entry in data.get("storyIdListStructs") or ():
+            if str(entry.get("authorId") or "") != str(author_id):
+                continue
+            story_ids.extend(
+                str(value) for value in entry.get("storyIds") or () if value
+            )
+
+        stories = []
+        for story_id in dict.fromkeys(story_ids):
+            embed = self._embed_data(f"/embed/v2/{story_id}")
+            stories.append(self._story_from_embed(story_id, embed))
+        return stories
+
+    @staticmethod
+    def _story_from_embed(story_id, embed):
+        video_data = embed.get("videoData") or {}
+        item = video_data.get("itemInfos") or {}
+        actual_id = str(item.get("id") or story_id)
+        if actual_id != str(story_id):
+            raise TikTokError(
+                f"TikTok returned story {actual_id} while requesting {story_id}"
+            )
+
+        normalized = {
+            "id": actual_id,
+            "desc": item.get("text") or "story",
+        }
+        image_post = (
+            video_data.get("imagePostInfo")
+            or item.get("imagePostInfo")
+            or item.get("imagePost")
+        )
+        if image_post:
+            normalized["imagePost"] = image_post
+            return normalized
+
+        video = item.get("video") or {}
+        urls = video.get("urls") or video.get("urlList") or ()
+        if isinstance(urls, str):
+            urls = [urls]
+        if not urls:
+            play_address = video.get("playAddr")
+            if isinstance(play_address, str):
+                urls = [play_address]
+            elif isinstance(play_address, dict):
+                urls = play_address.get("urlList") or ()
+        normalized["video"] = {"playAddr": {"urlList": list(urls)}}
+        return normalized
+
+    def _download_post(self, item, *, is_story=False):
         post_id = str(item.get("id") or "unknown")
         image_post = item.get("imagePost")
         description = self._clean_description(
             item.get("desc") or (image_post and image_post.get("title")),
-            f"TikTok post #{post_id}",
+            "story" if is_story else f"TikTok post #{post_id}",
         )
+        destination = self.output / "stories" if is_story else self.output
+        if is_story and not self.args.dry_run:
+            destination.mkdir(parents=True, exist_ok=True)
 
         if image_post:
             images = image_post.get("images") or ()
@@ -481,14 +633,14 @@ class TikTokDownloader:
                 filename = self._filename(
                     post_id, description, extension, number
                 )
-                result = self._download_urls(urls, self.output / filename)
+                result = self._download_urls(urls, destination / filename)
                 totals[result] += 1
             return tuple(totals)
 
         video = item.get("video") or {}
         urls = self._video_urls(video)
         filename = self._filename(post_id, description, "mp4")
-        result = self._download_urls(urls, self.output / filename)
+        result = self._download_urls(urls, destination / filename)
         totals = [0, 0, 0]
         totals[result] = 1
         return tuple(totals)
@@ -609,13 +761,13 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="tt-dlp",
         description=(
-            "Download TikTok videos and photo posts from one or more queued "
-            "profiles or post URLs"
+            "Download TikTok videos, photo posts, and active stories from "
+            "one or more queued profiles or post URLs"
         )
     )
     parser.add_argument(
         "targets", nargs="*",
-        help="one or more @usernames or TikTok profile/video/photo URLs",
+        help="one or more @usernames or TikTok profile/video/photo/story URLs",
     )
     parser.add_argument(
         "-c", "--config",
@@ -655,6 +807,15 @@ def parse_args(argv=None):
     parser.add_argument(
         "--dry-run", action="store_true", default=None,
         help="show filenames without downloading media",
+    )
+    story_group = parser.add_mutually_exclusive_group()
+    story_group.add_argument(
+        "--stories", dest="stories", action="store_true", default=None,
+        help="also download active stories (requires cookies)",
+    )
+    story_group.add_argument(
+        "--no-stories", dest="stories", action="store_false",
+        help="disable stories when enabled by the config file",
     )
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}",
@@ -768,6 +929,10 @@ def prepare_run(args):
         args.dry_run if args.dry_run is not None
         else bool(config.get("dry_run", False))
     )
+    args.stories = (
+        args.stories if args.stories is not None
+        else bool(config.get("stories", False))
+    )
 
     args.output = _relative_path(args.output, config_dir)
     args.cookies = _relative_path(args.cookies, config_dir)
@@ -817,6 +982,7 @@ def initialize_config(filename):
         "limit": 0,
         "overwrite": False,
         "dry_run": False,
+        "stories": False,
     }
     with config_path.open("x", encoding="utf-8") as file:
         json.dump(config, file, indent=2)

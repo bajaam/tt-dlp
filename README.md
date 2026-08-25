@@ -1,8 +1,8 @@
 # tt-dlp
 
 `tt-dlp` is a standalone, queue-based TikTok downloader for public profiles,
-individual videos, and photo posts. It can optionally load your own exported
-TikTok cookies when authenticated access is needed.
+individual videos, photo posts, and active stories. It can optionally load
+your own exported TikTok cookies when authenticated access is needed.
 
 It does **not** import, install, or run `yt-dlp` or `gallery-dl`. Its runtime
 uses only Python's standard library.
@@ -16,6 +16,7 @@ uses only Python's standard library.
 - Scans each complete profile before downloading its media
 - Retries transient empty profile responses instead of counting a zero page
 - Downloads videos and full photo carousels
+- Optionally downloads active video and photo stories into `stories/`
 - Skips files that already exist
 - Retries the current file until it succeeds or you press `Ctrl+C`
 - Supports an optional Netscape-format cookies file
@@ -92,6 +93,16 @@ Use a queue file without a config:
 tt-dlp --queue-file queue.txt
 ```
 
+Include each queued profile's currently active stories (cookies required):
+
+```bash
+tt-dlp --stories username
+```
+
+Stories are saved under `~/Downloads/TikTok/username/stories/` by default.
+They keep the normal ID-first filename format, for example
+`7677688392670301462 story.mp4`.
+
 ## Persistent queue and config
 
 Create your personal config and queue once:
@@ -128,7 +139,8 @@ Available `config.json` settings:
   "sleep": 2.0,
   "limit": 0,
   "overwrite": false,
-  "dry_run": false
+  "dry_run": false,
+  "stories": false
 }
 ```
 
@@ -140,6 +152,7 @@ Available `config.json` settings:
 - `limit`: maximum posts per profile after the complete scan; `0` means all
 - `overwrite`: replace existing completed files when `true`
 - `dry_run`: scan and show filenames without downloading when `true`
+- `stories`: include currently active stories when `true`; requires cookies
 
 Relative paths in a config are resolved from the config file's directory.
 Command-line targets, the JSON queue, and the text queue are combined in order;
@@ -165,6 +178,11 @@ authenticated web requests, so private-profile support cannot be guaranteed.
 Cookie files contain sign-in secrets. Never share or commit them. Common cookie
 filenames are excluded by this project's `.gitignore`.
 
+TikTok's web story lookup is authenticated even for public profiles. To use
+`--stories` or `"stories": true`, configure a current cookies file. Only active,
+unexpired stories are returned. Viewing permissions are still enforced by
+TikTok, and story downloads do not send a view-report request.
+
 ## Other options
 
 ```text
@@ -177,14 +195,18 @@ filenames are excluded by this project's `.gitignore`.
 --sleep SECONDS         Minimum delay between media downloads
 --overwrite             Replace existing files
 --dry-run               Scan and show filenames without downloading
+--stories               Also download active stories (requires cookies)
+--no-stories            Override and disable stories from config
 ```
 
 ## How it works
 
 `tt-dlp` reads TikTok's web embed/profile data to identify a creator, collects
 posts from TikTok's creator item-list response, and downloads the media URLs
-provided for those posts. TikTok can change these undocumented responses at
-any time, which may require this project to be updated.
+provided for those posts. When enabled, it separately reads TikTok's active
+story ID list and resolves each story through its embed metadata before any
+download begins. TikTok can change these undocumented responses at any time,
+which may require this project to be updated.
 
 ## Project layout
 
