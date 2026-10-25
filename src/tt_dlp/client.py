@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import http.client
 import random
 import re
 import time
@@ -609,7 +610,7 @@ class TikTokClient:
                 ):
                     raise TikTokError("TikTok returned a transient empty page")
                 return data
-            except (OSError, ValueError, TikTokError) as exc:
+            except (OSError, ValueError, TikTokError, http.client.HTTPException) as exc:
                 last_error = exc
                 if attempt < 4:
                     delay = self._retry_delay(attempt)
