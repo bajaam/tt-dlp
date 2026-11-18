@@ -53,7 +53,7 @@ class ConfigurationTests(unittest.TestCase):
                 settings, targets = config_module.prepare_run(args)
 
             self.assertEqual(targets, ["explicit_profile"])
-            self.assertEqual(settings.output, root / "archive")
+            self.assertEqual(settings.output, root.resolve() / "archive")
             self.assertEqual(settings.sleep, 4.5)
             self.assertTrue(settings.stories)
 
@@ -102,10 +102,14 @@ class ConfigurationTests(unittest.TestCase):
                 "--config", str(config_path), "profile",
             ]))
 
-            self.assertEqual(settings.output, root / "archive")
-            self.assertEqual(settings.cookies, root / "secrets" / "cookies.txt")
+            config_root = root.resolve()
+            self.assertEqual(settings.output, config_root / "archive")
             self.assertEqual(
-                settings.profile_store, root / "state" / "profiles.json"
+                settings.cookies, config_root / "secrets" / "cookies.txt"
+            )
+            self.assertEqual(
+                settings.profile_store,
+                config_root / "state" / "profiles.json",
             )
 
     def test_command_line_paths_are_relative_to_current_directory(self):
