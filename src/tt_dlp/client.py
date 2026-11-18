@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import http.client
 import random
 import re
 import time
@@ -300,7 +301,16 @@ class TikTokClient:
             image_count=image_count,
             author=author,
             is_story=is_story,
+            create_time=cls._create_time(value.get("createTime")),
         )
+
+    @staticmethod
+    def _create_time(value) -> int | None:
+        try:
+            timestamp = int(value)
+        except (TypeError, ValueError):
+            return None
+        return timestamp if timestamp > 0 else None
 
     @staticmethod
     def _photo_metadata(*values) -> dict | None:
@@ -609,7 +619,7 @@ class TikTokClient:
                 ):
                     raise TikTokError("TikTok returned a transient empty page")
                 return data
-            except (OSError, ValueError, TikTokError) as exc:
+            except (OSError, ValueError, TikTokError, http.client.HTTPException) as exc:
                 last_error = exc
                 if attempt < 4:
                     delay = self._retry_delay(attempt)

@@ -86,14 +86,14 @@ class TargetParsingTests(unittest.TestCase):
         self.assertEqual(user_id.kind, TargetKind.USER_ID)
         self.assertEqual(uid_alias.user_id, user_id.user_id)
 
-    def test_bare_digits_remain_a_possible_username(self):
+    def test_bare_digits_are_numeric_user_ids(self):
         target = parse_target("123456789")
 
-        self.assertEqual(target.kind, TargetKind.USERNAME)
-        self.assertEqual(target.username, "123456789")
+        self.assertEqual(target.kind, TargetKind.USER_ID)
+        self.assertEqual(target.user_id, "123456789")
 
-    def test_numeric_profile_url_remains_a_numeric_username(self):
-        target = parse_target("https://www.tiktok.com/@123456789")
+    def test_explicit_numeric_username_remains_a_username(self):
+        target = parse_target("@123456789")
 
         self.assertEqual(target.kind, TargetKind.USERNAME)
         self.assertEqual(target.username, "123456789")

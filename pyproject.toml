@@ -33,7 +33,10 @@ classifiers = [
     "Topic :: Internet",
     "Topic :: Multimedia :: Video",
 ]
-dependencies = []
+dependencies = [
+    "mutagen>=1.47",
+    "Pillow>=10",
+]
 
 [project.urls]
 Homepage = "https://github.com/bajaam/tt-dlp"

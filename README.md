@@ -125,6 +125,12 @@ not a cookie or password file, but it is machine-managed and normally should
 not be edited by hand. Deleting it resets remembered aliases and folder names;
 downloaded media is not removed.
 
+A bare 5-30 digit target is treated as a numeric user ID. To download a
+numeric username, prefix it with `@`. For a numeric ID not yet mapped in the
+profile store, run the profile URL or `@username` first; this discovers the
+post-list identity without depending on an active Story. After that, the
+numeric ID can use the saved mapping even when no Stories are active.
+
 By default, the profile store is `profiles.json` beside an active config file,
 or in the per-user `tt-dlp` config directory when no config is loaded. Choose a
 different file with:
@@ -163,7 +169,9 @@ Example configuration:
   "limit": 0,
   "overwrite": false,
   "dry_run": false,
-  "stories": true
+  "stories": true,
+  "filename_template": "",
+  "embed_metadata": false
 }
 ```
 
@@ -179,6 +187,8 @@ Example configuration:
 | `overwrite` | Replace completed files when `true`. |
 | `dry_run` | Show planned filenames without downloading when `true`. |
 | `stories` | Scan active stories when `true` (default); skipped if no usable cookies are loaded. |
+| `filename_template` | Optional output name pattern. Fields: `{username}`, `{timestamp}` (UTC `YYMMDDhhmmss`), `{post_id}`, `{description}`, `{ext}`, and `{index}`. |
+| `embed_metadata` | Write the original TikTok post time to JPEG/PNG EXIF or MP4 date metadata when `true`. |
 
 Relative paths inside the config resolve from the config file's directory.
 Relative paths passed on the command line resolve from the current directory.
@@ -262,6 +272,18 @@ TikTok/
 
 Existing completed filenames are skipped unless `--overwrite` is used.
 Interrupted transfers remain as `.part` files and are not treated as complete.
+Set a template on the command line or in the config to change the naming
+pattern; filenames retain the current post-ID format by default:
+
+```bash
+tt-dlp --filename-template '@{username}-{timestamp}.{ext}' @profile_name
+```
+
+Carousel slide files get an `_01`, `_02`, ... suffix unless the template
+includes `{index}`. Timestamp-based templates require TikTok to provide the
+post creation time. Metadata embedding is opt-in with `--embed-metadata` (or
+`"embed_metadata": true`) and records the post time in UTC. It uses Pillow for
+JPEG/PNG EXIF and Mutagen for MP4 date metadata.
 
 ## Command reference
 
@@ -279,6 +301,9 @@ Interrupted transfers remain as `.part` files and are not treated as complete.
 --dry-run                Show planned filenames without downloading
 --stories                Include active stories for profile targets (default)
 --no-stories             Download regular posts without scanning stories
+--filename-template TEMPLATE
+                         Set a filename pattern; see Output and filenames
+--embed-metadata         Embed the original post time in media metadata
 --version                Show the installed version
 ```
 
@@ -286,8 +311,7 @@ Run `tt-dlp --help` for the authoritative help text for your installed version.
 
 ## Development
 
-The project uses a standard `src/` package layout and has no runtime
-dependencies.
+The project uses a standard `src/` package layout.
 
 ```bash
 python -m unittest discover -s tests -v

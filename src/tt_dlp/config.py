@@ -23,6 +23,8 @@ DEFAULT_CONFIG = {
     "overwrite": False,
     "dry_run": False,
     "stories": True,
+    "filename_template": "",
+    "embed_metadata": False,
 }
 CONFIG_KEYS = frozenset(DEFAULT_CONFIG)
 
@@ -192,6 +194,22 @@ def prepare_run(args: Namespace) -> tuple[Settings, list[str]]:
             config, "stories", DEFAULT_CONFIG["stories"]
         )
     )
+    filename_template = (
+        args.filename_template
+        if args.filename_template is not None
+        else config.get("filename_template", "")
+    )
+    if not isinstance(filename_template, str):
+        raise TikTokError(
+            "Config value 'filename_template' must be a string"
+        )
+    embed_metadata = (
+        args.embed_metadata
+        if args.embed_metadata is not None
+        else _config_bool(
+            config, "embed_metadata", DEFAULT_CONFIG["embed_metadata"]
+        )
+    )
 
     targets = [str(value).strip() for value in args.targets if str(value).strip()]
     if args.queue_file:
@@ -232,6 +250,8 @@ def prepare_run(args: Namespace) -> tuple[Settings, list[str]]:
         dry_run=bool(dry_run),
         stories=bool(stories),
         identify=bool(args.identify),
+        filename_template=filename_template,
+        embed_metadata=bool(embed_metadata),
     )
     return settings, targets
 

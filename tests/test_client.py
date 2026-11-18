@@ -200,6 +200,19 @@ class ClientNormalizationTests(unittest.TestCase):
                 {"id": "123456"}, expected_id="999999"
             )
 
+    def test_creation_time_is_normalized_and_invalid_values_are_ignored(self):
+        item = TikTokClient.normalize_item({
+            "id": "123456",
+            "createTime": "1704164645",
+        })
+        missing = TikTokClient.normalize_item({
+            "id": "123457",
+            "createTime": "not-a-timestamp",
+        })
+
+        self.assertEqual(item.create_time, 1704164645)
+        self.assertIsNone(missing.create_time)
+
     def test_identity_parser_requires_a_valid_username(self):
         valid = TikTokClient.identity_from_author({
             "uniqueId": "example",

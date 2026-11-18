@@ -7,8 +7,12 @@ import os
 import random
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from string import Formatter
 from urllib.parse import urlsplit
+
+from mutagen import MutagenError as MutagenException
 
 from .client import ROOT, TikTokClient
 from .errors import TikTokError
@@ -27,6 +31,9 @@ from .targets import parse_target
 
 INVALID_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 EXTENSION_RE = re.compile(r"[a-z0-9]{1,5}")
+FILENAME_FIELDS = frozenset({
+    "username", "timestamp", "post_id", "description", "ext", "index",
+})
 
 
 class _PhotoMetadataDiscovered(Exception):
@@ -35,6 +42,10 @@ class _PhotoMetadataDiscovered(Exception):
     def __init__(self, item: MediaItem):
         super().__init__(item.post_id)
         self.item = item
+
+
+class _MetadataEmbeddingError(TikTokError):
+    pass
 
 
 class TikTokDownloader:
@@ -377,11 +388,17 @@ class TikTokDownloader:
         summary = DownloadSummary()
         for item in posts:
             summary.add(self._download_item(
-                item, output=output, referer=profile_url
+                item,
+                output=output,
+                referer=profile_url,
+                username=identity.username,
             ))
         for item in stories:
             summary.add(self._download_item(
-                item, output=output, referer=profile_url
+                item,
+                output=output,
+                referer=profile_url,
+                username=identity.username,
             ))
 
         print()
@@ -483,6 +500,7 @@ class TikTokDownloader:
         *,
         output: Path,
         referer: str,
+        username: str | None = None,
     ) -> DownloadSummary:
         if not item.is_photo and not item.video_urls:
             print(f"[metadata] Refreshing media type for {item.post_id}")
@@ -500,6 +518,11 @@ class TikTokDownloader:
         description = self._clean_description(
             item.description,
             "story" if item.is_story else f"TikTok post #{item.post_id}",
+        )
+        username = (
+            username
+            or (item.author.username if item.author else "")
+            or output.name
         )
 
         if item.is_photo:
@@ -523,6 +546,9 @@ class TikTokDownloader:
                     description,
                     extension,
                     index=index,
+                    template=self.settings.filename_template,
+                    username=username,
+                    create_time=item.create_time,
                 )
                 outcome = self._download_media_part(
                     item,
@@ -536,7 +562,12 @@ class TikTokDownloader:
             return summary
 
         filename = self._filename(
-            item.post_id, description, "mp4"
+            item.post_id,
+            description,
+            "mp4",
+            template=self.settings.filename_template,
+            username=username,
+            create_time=item.create_time,
         )
         try:
             outcome = self._download_media_part(
@@ -553,7 +584,10 @@ class TikTokDownloader:
                 "from MP4 to image files"
             )
             return self._download_item(
-                discovered.item, output=output, referer=referer
+                discovered.item,
+                output=output,
+                referer=referer,
+                username=username,
             )
         summary.record(outcome)
         return summary
@@ -611,7 +645,11 @@ class TikTokDownloader:
             if index is not None
             else item.post_id
         )
-        existing = self._find_existing(destination_dir, key)
+        if self.settings.filename_template:
+            templated = destination_dir / filename
+            existing = templated if templated.is_file() else None
+        else:
+            existing = self._find_existing(destination_dir, key)
         if existing and not self.settings.overwrite:
             print(f"[skip] {existing.name}")
             return DownloadOutcome.SKIPPED
@@ -668,11 +706,28 @@ class TikTokDownloader:
                 print(f"[download] {destination.name}")
             for url in urls:
                 try:
-                    self._write_media(
-                        url, temporary, destination, referer=referer
-                    )
+                    if self.settings.embed_metadata:
+                        self._write_media(
+                            url,
+                            temporary,
+                            destination,
+                            referer=referer,
+                            create_time=(
+                                current.create_time or item.create_time
+                            ),
+                        )
+                    else:
+                        self._write_media(
+                            url, temporary, destination, referer=referer
+                        )
                     self.last_download_at = time.monotonic()
                     return
+                except _MetadataEmbeddingError:
+                    try:
+                        temporary.unlink()
+                    except FileNotFoundError:
+                        pass
+                    raise
                 except (OSError, TikTokError) as exc:
                     last_error = exc
                     try:
@@ -716,6 +771,7 @@ class TikTokDownloader:
         destination: Path,
         *,
         referer: str,
+        create_time: int | None = None,
     ) -> None:
         with self.client.request(
             url,
@@ -746,7 +802,83 @@ class TikTokDownloader:
                     if not chunk:
                         break
                     output.write(chunk)
+        if self.settings.embed_metadata:
+            self._embed_creation_time(
+                temporary,
+                destination.suffix.lower(),
+                create_time,
+            )
         os.replace(temporary, destination)
+
+    @staticmethod
+    def _embed_creation_time(
+        path: Path,
+        extension: str,
+        create_time: int | None,
+    ) -> None:
+        if create_time is None:
+            raise _MetadataEmbeddingError(
+                "TikTok did not provide the original post timestamp"
+            )
+        try:
+            timestamp = datetime.fromtimestamp(create_time, timezone.utc)
+            exif_timestamp = timestamp.strftime("%Y:%m:%d %H:%M:%S")
+            if extension in {".jpg", ".jpeg", ".png"}:
+                from PIL import Image
+
+                with Image.open(path) as image:
+                    image_format = image.format
+                    if image_format not in {"JPEG", "PNG"}:
+                        raise _MetadataEmbeddingError(
+                            f"Timestamp metadata is not supported for "
+                            f"{extension or 'this image format'}"
+                        )
+                    exif = image.getexif()
+                    exif[306] = exif_timestamp
+                    exif[36867] = exif_timestamp
+                    exif[36868] = exif_timestamp
+                    exif[36881] = "+00:00"
+                    exif[36882] = "+00:00"
+                    tagged = path.with_name(path.name + ".metadata")
+                    try:
+                        save_options = {"exif": exif}
+                        if image_format == "JPEG":
+                            save_options["quality"] = "keep"
+                        image.save(tagged, format=image_format, **save_options)
+                        os.replace(tagged, path)
+                    finally:
+                        try:
+                            tagged.unlink()
+                        except FileNotFoundError:
+                            pass
+                return
+            if extension == ".mp4":
+                from mutagen.mp4 import MP4
+
+                media = MP4(path)
+                if media.tags is None:
+                    media.add_tags()
+                media.tags["©day"] = [
+                    timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+                ]
+                media.save()
+                return
+            raise _MetadataEmbeddingError(
+                f"Timestamp metadata is not supported for {extension or 'this media format'}"
+            )
+        except _MetadataEmbeddingError:
+            raise
+        except (
+            ImportError,
+            MutagenException,
+            OverflowError,
+            OSError,
+            ValueError,
+            TypeError,
+        ) as exc:
+            raise _MetadataEmbeddingError(
+                f"Could not embed the original post timestamp: {exc}"
+            ) from exc
 
     def _wait_for_download_slot(self) -> None:
         if self.settings.sleep <= 0 or self.last_download_at is None:
@@ -782,6 +914,78 @@ class TikTokDownloader:
         extension: str,
         *,
         index: int | None = None,
+        template: str = "",
+        username: str = "",
+        create_time: int | None = None,
     ) -> str:
+        if template:
+            try:
+                template_parts = tuple(Formatter().parse(template))
+                fields = {
+                    field_name
+                    for _, field_name, _, _ in template_parts
+                    if field_name is not None
+                }
+            except ValueError as exc:
+                raise TikTokError(
+                    f"Invalid filename template: {exc}"
+                ) from exc
+            if not fields.issubset(FILENAME_FIELDS):
+                unknown = sorted(fields - FILENAME_FIELDS)
+                raise TikTokError(
+                    "Unknown filename template field"
+                    f"{'s' if len(unknown) != 1 else ''}: "
+                    + ", ".join(unknown)
+                )
+            if "ext" not in fields:
+                raise TikTokError(
+                    "Filename template must include the {ext} field"
+                )
+            if any(char in template for char in ("/", "\\", "\x00")):
+                raise TikTokError(
+                    "Filename template must not contain path separators"
+                )
+            if any(
+                format_spec or conversion
+                for _, field_name, format_spec, conversion in template_parts
+                if field_name is not None
+            ):
+                raise TikTokError(
+                    "Filename template fields cannot use format options"
+                )
+            timestamp = ""
+            if "timestamp" in fields:
+                if create_time is None:
+                    raise TikTokError(
+                        f"TikTok did not provide the original post timestamp "
+                        f"for {post_id}"
+                    )
+                try:
+                    timestamp = datetime.fromtimestamp(
+                        create_time, timezone.utc
+                    ).strftime("%y%m%d%H%M%S")
+                except (OverflowError, OSError, ValueError) as exc:
+                    raise TikTokError(
+                        f"TikTok returned an invalid post timestamp "
+                        f"for {post_id}"
+                    ) from exc
+            values = {
+                "username": username,
+                "timestamp": timestamp,
+                "post_id": post_id,
+                "description": description,
+                "ext": extension,
+                "index": str(index or ""),
+            }
+            filename = template.format_map(values)
+            if index is not None and "index" not in fields:
+                stem, suffix = os.path.splitext(filename)
+                filename = f"{stem}_{index:02d}{suffix}"
+            filename = INVALID_FILENAME_RE.sub("_", filename).strip(" .")
+            if filename in {"", ".", ".."}:
+                raise TikTokError(
+                    "Filename template produced an invalid filename"
+                )
+            return filename
         suffix = f"_{index:02d}" if index is not None else ""
         return f"{post_id}{suffix} {description}.{extension}"

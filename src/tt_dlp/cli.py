@@ -89,6 +89,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--filename-template",
+        help=(
+            "filename template using {username}, {timestamp}, {post_id}, "
+            "{description}, {ext}, and {index}; timestamp is UTC YYMMDDhhmmss"
+        ),
+    )
+    parser.add_argument(
+        "--embed-metadata",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="embed TikTok's original post time in supported media metadata",
+    )
+    parser.add_argument(
         "--identify",
         action="store_true",
         help="resolve and save identity, then print a rename-safe target",

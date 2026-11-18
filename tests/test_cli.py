@@ -23,6 +23,18 @@ class CommandLineTests(unittest.TestCase):
         self.assertFalse(args.dry_run)
         self.assertFalse(args.stories)
 
+    def test_filename_and_metadata_flags_parse(self):
+        args = cli.parse_args([
+            "--filename-template", "@{username}-{timestamp}.{ext}",
+            "--embed-metadata",
+            "example",
+        ])
+
+        self.assertEqual(
+            args.filename_template, "@{username}-{timestamp}.{ext}"
+        )
+        self.assertTrue(args.embed_metadata)
+
     def test_main_continues_after_one_target_error(self):
         settings = Settings(
             output=Path("downloads"),

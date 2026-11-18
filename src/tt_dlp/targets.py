@@ -84,6 +84,12 @@ def _identifier_target(value: str, raw: str) -> Target:
             raw=raw,
             sec_uid=validate_sec_uid(value[len("secuid:"):]),
         )
+    if re.fullmatch(r"\d{5,30}", value):
+        return Target(
+            kind=TargetKind.USER_ID,
+            raw=raw,
+            user_id=validate_user_id(value),
+        )
     username = value[1:] if value.startswith("@") else value
     return Target(
         kind=TargetKind.USERNAME,

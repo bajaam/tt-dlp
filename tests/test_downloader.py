@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
@@ -30,6 +31,8 @@ def settings(
     overwrite: bool = False,
     identify: bool = False,
     stories: bool = False,
+    filename_template: str = "",
+    embed_metadata: bool = False,
 ) -> Settings:
     return Settings(
         output=output,
@@ -41,6 +44,8 @@ def settings(
         dry_run=dry_run,
         stories=stories,
         identify=identify,
+        filename_template=filename_template,
+        embed_metadata=embed_metadata,
     )
 
 
@@ -77,6 +82,156 @@ class ResponseClient(NoNetworkClient):
 
 
 class DownloadArchiveTests(unittest.TestCase):
+    def test_custom_template_uses_username_and_utc_creation_time(self):
+        timestamp = int(datetime(
+            2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc
+        ).timestamp())
+
+        filename = TikTokDownloader._filename(
+            "123456",
+            "post",
+            "mp4",
+            template="@{username}-{timestamp}.{ext}",
+            username="example",
+            create_time=timestamp,
+        )
+
+        self.assertEqual(filename, "@example-240102030405.mp4")
+
+    def test_custom_template_is_used_for_download_queue_names(self):
+        timestamp = int(datetime(
+            2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc
+        ).timestamp())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            downloader = TikTokDownloader(
+                settings(
+                    root,
+                    dry_run=True,
+                    filename_template="@{username}-{timestamp}.{ext}",
+                ),
+                client=NoNetworkClient(),
+            )
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                summary = downloader._download_item(
+                    MediaItem(
+                        post_id="123456",
+                        description="post",
+                        video_urls=("https://cdn.example/video.mp4",),
+                        author=ProfileIdentity(username="example"),
+                        create_time=timestamp,
+                    ),
+                    output=root,
+                    referer=REFERER,
+                )
+
+            self.assertEqual(summary.planned, 1)
+            self.assertIn(
+                "[dry-run] @example-240102030405.mp4",
+                output.getvalue(),
+            )
+
+    def test_custom_template_adds_photo_index_when_missing(self):
+        filename = TikTokDownloader._filename(
+            "123456",
+            "post",
+            "jpg",
+            index=2,
+            template="{post_id}.{ext}",
+            username="example",
+        )
+
+        self.assertEqual(filename, "123456_02.jpg")
+
+    def test_custom_template_rejects_unknown_fields(self):
+        with self.assertRaisesRegex(TikTokError, "Unknown filename template"):
+            TikTokDownloader._filename(
+                "123456",
+                "post",
+                "mp4",
+                template="{unknown}.{ext}",
+            )
+
+    def test_metadata_embedding_writes_jpeg_and_png_exif_timestamps(self):
+        from PIL import Image
+
+        timestamp = int(datetime(
+            2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc
+        ).timestamp())
+        expected = "2024:01:02 03:04:05"
+
+        with tempfile.TemporaryDirectory() as directory:
+            for extension, image_format in ((".jpg", "JPEG"), (".png", "PNG")):
+                with self.subTest(extension=extension):
+                    path = Path(directory) / f"image{extension}"
+                    Image.new("RGB", (4, 4), (30, 60, 90)).save(
+                        path, format=image_format
+                    )
+
+                    TikTokDownloader._embed_creation_time(
+                        path, extension, timestamp
+                    )
+
+                    with Image.open(path) as image:
+                        self.assertEqual(
+                            image.getexif()[36867], expected
+                        )
+
+    def test_download_embeds_png_timestamp_before_finalizing_file(self):
+        from PIL import Image
+
+        payload = io.BytesIO()
+        Image.new("RGB", (4, 4), (30, 60, 90)).save(payload, format="PNG")
+        timestamp = int(datetime(
+            2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc
+        ).timestamp())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "photo.png"
+            downloader = TikTokDownloader(
+                settings(root, embed_metadata=True),
+                client=ResponseClient(payload.getvalue(), "image/png"),
+            )
+
+            downloader._write_media(
+                "https://cdn.example/photo.png",
+                root / "photo.png.part",
+                destination,
+                referer=REFERER,
+                create_time=timestamp,
+            )
+
+            with Image.open(destination) as image:
+                self.assertEqual(
+                    image.getexif()[36867], "2024:01:02 03:04:05"
+                )
+
+    def test_metadata_embedding_writes_mp4_date_tag(self):
+        from mutagen.mp4 import MP4
+
+        class FakeMP4:
+            def __init__(self, path):
+                self.tags = {}
+                self.saved = False
+
+            def save(self):
+                self.saved = True
+
+        timestamp = int(datetime(
+            2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc
+        ).timestamp())
+        media = FakeMP4("video.mp4")
+
+        with patch("mutagen.mp4.MP4", return_value=media):
+            TikTokDownloader._embed_creation_time(
+                Path("video.mp4"), ".mp4", timestamp
+            )
+
+        self.assertEqual(media.tags["©day"], ["2024-01-02T03:04:05Z"])
+        self.assertTrue(media.saved)
+
     def test_existing_video_id_skips_when_description_changed(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "profile"
@@ -641,6 +796,87 @@ class DownloaderIdentityTests(unittest.TestCase):
                 store.find(parse_target(f"userid:{USER_ID}")).directory,
                 "example",
             )
+
+    def test_profile_and_numeric_id_download_posts_without_active_stories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = ProfileStore(root / "profiles.json")
+
+            class EmptyStoryClient(NoNetworkClient):
+                has_cookies = True
+
+                def creator_data(self, username):
+                    return {"userInfo": {
+                        "uniqueId": username,
+                        "id": USER_ID,
+                        "privateAccount": False,
+                    }, "videoList": [{"id": "555555"}]}
+
+                @staticmethod
+                def identity_from_creator(creator):
+                    user = creator["userInfo"]
+                    return ProfileIdentity(
+                        username=user["uniqueId"],
+                        user_id=user["id"],
+                    )
+
+                def media_from_embed(self, post_id, *, is_story=False):
+                    return MediaItem(
+                        post_id=post_id,
+                        description="regular post",
+                        video_urls=("https://cdn.example/post.mp4",),
+                        author=ProfileIdentity(
+                            username="stonakah",
+                            user_id=USER_ID,
+                            sec_uid=SEC_UID,
+                        ),
+                        is_story=is_story,
+                    )
+
+                def collect_posts(self, sec_uid, **kwargs):
+                    if sec_uid != SEC_UID:
+                        raise AssertionError(f"unexpected secUid: {sec_uid}")
+                    return [MediaItem(
+                        post_id="555555",
+                        description="regular post",
+                        video_urls=("https://cdn.example/post.mp4",),
+                        author=ProfileIdentity(
+                            username="stonakah",
+                            user_id=USER_ID,
+                            sec_uid=SEC_UID,
+                        ),
+                    )]
+
+                def collect_stories(self, identity, **kwargs):
+                    if identity.user_id != USER_ID:
+                        raise AssertionError(
+                            f"unexpected user ID: {identity.user_id}"
+                        )
+                    return []
+
+            client = EmptyStoryClient()
+            downloader = TikTokDownloader(
+                settings(root, dry_run=True, stories=True),
+                client=client,
+                profile_store=store,
+            )
+            for target in (
+                "https://www.tiktok.com/@stonakah",
+                USER_ID,
+            ):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    result = downloader.run(target)
+
+                self.assertEqual(result, 0)
+                self.assertIn(
+                    "Starting download queue: 1 posts, 0 stories.",
+                    output.getvalue(),
+                )
+                self.assertIn(
+                    "[dry-run] 555555 regular post.mp4",
+                    output.getvalue(),
+                )
 
     def test_unknown_numeric_id_explains_that_sec_uid_is_required(self):
         with tempfile.TemporaryDirectory() as directory:

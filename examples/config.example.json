@@ -8,5 +8,7 @@
   "limit": 0,
   "overwrite": false,
   "dry_run": false,
-  "stories": true
+  "stories": true,
+  "filename_template": "",
+  "embed_metadata": false
 }

@@ -88,6 +88,8 @@ class Settings:
     dry_run: bool
     stories: bool
     identify: bool
+    filename_template: str = ""
+    embed_metadata: bool = False
 
 
 class DownloadOutcome(str, Enum):
@@ -125,6 +127,7 @@ class MediaItem:
     image_count: int = 0
     author: ProfileIdentity | None = None
     is_story: bool = False
+    create_time: int | None = None
 
     @property
     def is_photo(self) -> bool:

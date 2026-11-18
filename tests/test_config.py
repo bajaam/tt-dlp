@@ -198,6 +198,34 @@ class ConfigurationTests(unittest.TestCase):
             self.assertFalse(settings.overwrite)
             self.assertFalse(settings.dry_run)
 
+    def test_filename_and_metadata_options_load_from_cli_and_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.write_config(
+                Path(directory) / "config.json",
+                filename_template="@{username}-{timestamp}.{ext}",
+                embed_metadata=True,
+            )
+            settings, _ = config_module.prepare_run(parse_args([
+                "--config", str(path), "profile",
+            ]))
+
+            self.assertEqual(
+                settings.filename_template,
+                "@{username}-{timestamp}.{ext}",
+            )
+            self.assertTrue(settings.embed_metadata)
+
+            cli_settings, _ = config_module.prepare_run(parse_args([
+                "--config", str(path),
+                "--filename-template", "{post_id}.{ext}",
+                "--no-embed-metadata",
+                "profile",
+            ]))
+            self.assertEqual(
+                cli_settings.filename_template, "{post_id}.{ext}"
+            )
+            self.assertFalse(cli_settings.embed_metadata)
+
     def test_unknown_config_keys_are_reported_and_ignored(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self.write_config(
