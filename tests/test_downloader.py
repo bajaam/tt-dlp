@@ -1,4 +1,5 @@
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -206,6 +207,12 @@ class DownloadArchiveTests(unittest.TestCase):
             with Image.open(destination) as image:
                 self.assertEqual(
                     image.getexif()[36867], "2024:01:02 03:04:05"
+                )
+            if os.name == "nt":
+                self.assertAlmostEqual(
+                    destination.stat().st_birthtime,
+                    timestamp,
+                    delta=1,
                 )
 
     def test_metadata_embedding_writes_mp4_date_tag(self):

@@ -1,4 +1,5 @@
 import io
+import json
 import sys
 import unittest
 from contextlib import redirect_stdout
@@ -164,6 +165,74 @@ class ClientNormalizationTests(unittest.TestCase):
         ))
         self.assertEqual(item.image_count, 2)
         self.assertEqual(item.author.username, "example")
+
+    def test_media_from_embed_falls_back_to_post_page_data(self):
+        client = TikTokClient(settings())
+        requested = []
+
+        def missing_embed(path):
+            raise TikTokError(
+                f"TikTok embed data was missing for {path}"
+            )
+
+        client.embed_data = missing_embed
+
+        item_data = {
+            "id": "123456",
+            "desc": "post page media",
+            "video": {
+                "playAddr": {
+                    "urlList": ["https://cdn.example/video.mp4"],
+                },
+            },
+            "author": {
+                "uniqueId": "example",
+                "id": USER_ID,
+                "secUid": SEC_UID,
+            },
+        }
+        page = (
+            '<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">'
+            + json.dumps({
+                "__DEFAULT_SCOPE__": {
+                    "webapp.video-detail": {
+                        "itemInfo": {"itemStruct": item_data},
+                    },
+                },
+            })
+            + "</script>"
+        )
+
+        class PageResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            @staticmethod
+            def read():
+                return page.encode()
+
+        def request(url):
+            requested.append(url)
+            return PageResponse()
+
+        client.request = request
+        item = client.media_from_embed("123456")
+
+        self.assertEqual(
+            requested,
+            ["https://www.tiktok.com/@_/video/123456"],
+        )
+        self.assertEqual(item.video_urls, (
+            "https://cdn.example/video.mp4",
+        ))
+        self.assertEqual(item.author, ProfileIdentity(
+            username="example",
+            user_id=USER_ID,
+            sec_uid=SEC_UID,
+        ))
 
     def test_video_urls_are_quality_ordered_and_deduplicated(self):
         urls = TikTokClient.video_urls({

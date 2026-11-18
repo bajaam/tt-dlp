@@ -283,7 +283,9 @@ Carousel slide files get an `_01`, `_02`, ... suffix unless the template
 includes `{index}`. Timestamp-based templates require TikTok to provide the
 post creation time. Metadata embedding is opt-in with `--embed-metadata` (or
 `"embed_metadata": true`) and records the post time in UTC. It uses Pillow for
-JPEG/PNG EXIF and Mutagen for MP4 date metadata.
+JPEG/PNG EXIF and Mutagen for MP4 date metadata. On Windows, enabling metadata
+embedding also sets the file's filesystem **Date created** timestamp to the
+post time; the embedded media metadata works across platforms.
 
 ## Command reference
 

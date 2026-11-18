@@ -35,6 +35,11 @@ STATE_RE = re.compile(
     r"(.*?)</script>",
     re.IGNORECASE | re.DOTALL,
 )
+UNIVERSAL_STATE_RE = re.compile(
+    r'<script[^>]+id=["\']__UNIVERSAL_DATA_FOR_REHYDRATION__["\'][^>]*>'
+    r"(.*?)</script>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class TikTokClient:
@@ -172,7 +177,14 @@ class TikTokClient:
         is_story: bool = False,
     ) -> MediaItem:
         post_id = validate_post_id(str(post_id))
-        embed = self.embed_data(f"/embed/v2/{post_id}")
+        try:
+            embed = self.embed_data(f"/embed/v2/{post_id}")
+        except TikTokError as exc:
+            if "TikTok embed data was missing" not in str(exc):
+                raise
+            return self.media_from_video_page(
+                post_id, is_story=is_story
+            )
         video_data = embed.get("videoData")
         if not isinstance(video_data, dict):
             raise TikTokError(f"TikTok returned no media data for {post_id}")
@@ -192,6 +204,40 @@ class TikTokClient:
             raw_item,
             expected_id=post_id,
             author=author,
+            is_story=is_story,
+        )
+
+    def media_from_video_page(
+        self,
+        post_id: str,
+        *,
+        is_story: bool = False,
+    ) -> MediaItem:
+        """Read media and author metadata from TikTok's rendered post page."""
+        path = f"/@_/video/{post_id}"
+        with self.request(ROOT + path) as response:
+            page = response.read().decode("utf-8", "replace")
+        match = UNIVERSAL_STATE_RE.search(page)
+        if not match:
+            raise TikTokError(
+                f"TikTok post page data was missing for {post_id}"
+            )
+        try:
+            state = json.loads(match.group(1))
+            scope = state["__DEFAULT_SCOPE__"]
+            detail = scope["webapp.video-detail"]
+            item_info = detail["itemInfo"]
+            raw_item = item_info["itemStruct"]
+            if not isinstance(raw_item, dict):
+                raise TypeError("itemStruct is not an object")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TikTokError(
+                f"Invalid TikTok post page data for {post_id}: {exc}"
+            ) from exc
+        return self.normalize_item(
+            raw_item,
+            expected_id=post_id,
+            author=self.identity_from_author(raw_item.get("author")),
             is_story=is_story,
         )
 

@@ -6,6 +6,7 @@ import html
 import os
 import random
 import re
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -808,7 +809,78 @@ class TikTokDownloader:
                 destination.suffix.lower(),
                 create_time,
             )
+            self._set_file_creation_time(temporary, create_time)
         os.replace(temporary, destination)
+
+    @staticmethod
+    def _set_file_creation_time(path: Path, create_time: int | None) -> None:
+        if sys.platform != "win32" or create_time is None:
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class FILETIME(ctypes.Structure):
+                _fields_ = [
+                    ("dwLowDateTime", wintypes.DWORD),
+                    ("dwHighDateTime", wintypes.DWORD),
+                ]
+
+            filetime_value = (
+                create_time + 11_644_473_600
+            ) * 10_000_000
+            if not 0 <= filetime_value <= 0xFFFFFFFFFFFFFFFF:
+                raise ValueError("timestamp is outside the Windows FILETIME range")
+            creation_time = FILETIME(
+                filetime_value & 0xFFFFFFFF,
+                filetime_value >> 32,
+            )
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CreateFileW.argtypes = (
+                wintypes.LPCWSTR,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                wintypes.HANDLE,
+            )
+            kernel32.CreateFileW.restype = wintypes.HANDLE
+            kernel32.SetFileTime.argtypes = (
+                wintypes.HANDLE,
+                ctypes.POINTER(FILETIME),
+                ctypes.POINTER(FILETIME),
+                ctypes.POINTER(FILETIME),
+            )
+            kernel32.SetFileTime.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel32.CloseHandle.restype = wintypes.BOOL
+
+            handle = kernel32.CreateFileW(
+                str(path),
+                0x0100,
+                0x00000001 | 0x00000002 | 0x00000004,
+                None,
+                3,
+                0x00000080,
+                None,
+            )
+            if handle == ctypes.c_void_p(-1).value:
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                if not kernel32.SetFileTime(
+                    handle,
+                    ctypes.byref(creation_time),
+                    None,
+                    None,
+                ):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            finally:
+                kernel32.CloseHandle(handle)
+        except (OSError, OverflowError, ValueError) as exc:
+            raise _MetadataEmbeddingError(
+                f"Could not set the Windows file creation time: {exc}"
+            ) from exc
 
     @staticmethod
     def _embed_creation_time(
