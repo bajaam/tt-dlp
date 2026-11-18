@@ -284,8 +284,9 @@ includes `{index}`. Timestamp-based templates require TikTok to provide the
 post creation time. Metadata embedding is opt-in with `--embed-metadata` (or
 `"embed_metadata": true`) and records the post time in UTC. It uses Pillow for
 JPEG/PNG EXIF and Mutagen for MP4 date metadata. On Windows, enabling metadata
-embedding also sets the file's filesystem **Date created** timestamp to the
-post time; the embedded media metadata works across platforms.
+embedding also sets the file's filesystem **Date created** and **Date
+modified** timestamps to the post time; the embedded media metadata works
+across platforms.
 
 ## Command reference
 

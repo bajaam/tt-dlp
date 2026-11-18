@@ -214,6 +214,11 @@ class DownloadArchiveTests(unittest.TestCase):
                     timestamp,
                     delta=1,
                 )
+                self.assertAlmostEqual(
+                    destination.stat().st_mtime,
+                    timestamp,
+                    delta=1,
+                )
 
     def test_metadata_embedding_writes_mp4_date_tag(self):
         from mutagen.mp4 import MP4

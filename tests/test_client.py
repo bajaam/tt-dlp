@@ -214,8 +214,8 @@ class ClientNormalizationTests(unittest.TestCase):
             def read():
                 return page.encode()
 
-        def request(url):
-            requested.append(url)
+        def request(url, *, anonymous):
+            requested.append((url, anonymous))
             return PageResponse()
 
         client.request = request
@@ -223,7 +223,7 @@ class ClientNormalizationTests(unittest.TestCase):
 
         self.assertEqual(
             requested,
-            ["https://www.tiktok.com/@_/video/123456"],
+            [("https://www.tiktok.com/@_/video/123456", True)],
         )
         self.assertEqual(item.video_urls, (
             "https://cdn.example/video.mp4",

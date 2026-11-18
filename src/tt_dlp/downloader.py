@@ -809,11 +809,11 @@ class TikTokDownloader:
                 destination.suffix.lower(),
                 create_time,
             )
-            self._set_file_creation_time(temporary, create_time)
+            self._set_file_timestamps(temporary, create_time)
         os.replace(temporary, destination)
 
     @staticmethod
-    def _set_file_creation_time(path: Path, create_time: int | None) -> None:
+    def _set_file_timestamps(path: Path, create_time: int | None) -> None:
         if sys.platform != "win32" or create_time is None:
             return
         try:
@@ -831,7 +831,7 @@ class TikTokDownloader:
             ) * 10_000_000
             if not 0 <= filetime_value <= 0xFFFFFFFFFFFFFFFF:
                 raise ValueError("timestamp is outside the Windows FILETIME range")
-            creation_time = FILETIME(
+            post_time = FILETIME(
                 filetime_value & 0xFFFFFFFF,
                 filetime_value >> 32,
             )
@@ -870,16 +870,16 @@ class TikTokDownloader:
             try:
                 if not kernel32.SetFileTime(
                     handle,
-                    ctypes.byref(creation_time),
+                    ctypes.byref(post_time),
                     None,
-                    None,
+                    ctypes.byref(post_time),
                 ):
                     raise ctypes.WinError(ctypes.get_last_error())
             finally:
                 kernel32.CloseHandle(handle)
         except (OSError, OverflowError, ValueError) as exc:
             raise _MetadataEmbeddingError(
-                f"Could not set the Windows file creation time: {exc}"
+                f"Could not set the Windows file timestamps: {exc}"
             ) from exc
 
     @staticmethod

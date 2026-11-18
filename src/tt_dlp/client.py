@@ -215,9 +215,16 @@ class TikTokClient:
     ) -> MediaItem:
         """Read media and author metadata from TikTok's rendered post page."""
         path = f"/@_/video/{post_id}"
-        with self.request(ROOT + path) as response:
-            page = response.read().decode("utf-8", "replace")
-        match = UNIVERSAL_STATE_RE.search(page)
+        match = None
+        for anonymous in (True, False):
+            with self.request(
+                ROOT + path,
+                anonymous=anonymous,
+            ) as response:
+                page = response.read().decode("utf-8", "replace")
+            match = UNIVERSAL_STATE_RE.search(page)
+            if match:
+                break
         if not match:
             raise TikTokError(
                 f"TikTok post page data was missing for {post_id}"
