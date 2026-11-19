@@ -647,15 +647,37 @@ class TikTokDownloader:
             else item.post_id
         )
         if self.settings.filename_template:
-            templated = destination_dir / filename
-            existing = templated if templated.is_file() else None
+            destination = (destination_dir / filename).resolve()
+            if not destination.is_relative_to(destination_dir):
+                raise TikTokError("Resolved filename escaped its media folder")
+            existing = (
+                destination
+                if destination.is_file()
+                else self._find_existing(destination_dir, key)
+            )
         else:
             existing = self._find_existing(destination_dir, key)
+            destination = existing or (destination_dir / filename)
         if existing and not self.settings.overwrite:
-            print(f"[skip] {existing.name}")
+            if existing != destination:
+                if self.settings.dry_run:
+                    print(
+                        f"[dry-run] rename {existing.name} -> "
+                        f"{destination.name}"
+                    )
+                    return DownloadOutcome.PLANNED
+                try:
+                    existing.rename(destination)
+                except OSError as exc:
+                    raise TikTokError(
+                        f"Could not rename {existing.name} to "
+                        f"{destination.name}: {exc}"
+                    ) from exc
+                print(f"[rename] {existing.name} -> {destination.name}")
+            else:
+                print(f"[skip] {existing.name}")
             return DownloadOutcome.SKIPPED
 
-        destination = existing or (destination_dir / filename)
         destination = destination.resolve()
         if not destination.is_relative_to(destination_dir):
             raise TikTokError("Resolved filename escaped its media folder")

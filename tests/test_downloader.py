@@ -134,6 +134,35 @@ class DownloadArchiveTests(unittest.TestCase):
                 output.getvalue(),
             )
 
+    def test_custom_template_renames_existing_default_file_without_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "profile"
+            output.mkdir()
+            previous = output / "123456 old description.mp4"
+            previous.write_bytes(b"already downloaded")
+            downloader = TikTokDownloader(
+                settings(
+                    Path(directory),
+                    filename_template="{post_id}.{ext}",
+                ),
+                client=NoNetworkClient(),
+            )
+
+            summary = downloader._download_item(
+                MediaItem(
+                    post_id="123456",
+                    description="new description",
+                    video_urls=("https://cdn.example/video.mp4",),
+                ),
+                output=output,
+                referer=REFERER,
+            )
+
+            renamed = output / "123456.mp4"
+            self.assertEqual(summary.skipped, 1)
+            self.assertFalse(previous.exists())
+            self.assertEqual(renamed.read_bytes(), b"already downloaded")
+
     def test_custom_template_adds_photo_index_when_missing(self):
         filename = TikTokDownloader._filename(
             "123456",

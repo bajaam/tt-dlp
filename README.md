@@ -286,7 +286,9 @@ post creation time. Metadata embedding is opt-in with `--embed-metadata` (or
 JPEG/PNG EXIF and Mutagen for MP4 date metadata. On Windows, enabling metadata
 embedding also sets the file's filesystem **Date created** and **Date
 modified** timestamps to the post time; the embedded media metadata works
-across platforms.
+across platforms. When a template changes, matching existing default-format
+files are renamed in place when `overwrite` is false. Set `overwrite` to false
+to avoid re-downloading files while changing their names.
 
 ## Command reference
 
