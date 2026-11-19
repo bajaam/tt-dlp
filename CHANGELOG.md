@@ -5,6 +5,38 @@ All notable changes to `tt-dlp` are documented here. The project follows
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-19
+
+### Added
+
+- Custom filename templates with `{username}`, `{timestamp}`, `{post_id}`,
+  `{description}`, `{ext}`, and `{index}` fields.
+- Optional JPEG, PNG, and MP4 original-post timestamp metadata embedding.
+- Windows file creation and modification timestamps set to the TikTok post
+  time when metadata embedding is enabled.
+- Anonymous post-page and embed fallback requests for public media when cookies
+  are unavailable.
+- Carousel and Story filename index handling for custom templates.
+
+### Changed
+
+- Existing completed default-format files can be renamed in place when a
+  custom filename template is introduced or changed, without re-downloading
+  media.
+- Output timestamps and filename templates use the original TikTok post time
+  in UTC.
+- Relative config paths resolve from the active config file, including values
+  loaded through an explicitly selected config.
+
+### Fixed
+
+- Media metadata fallback no longer leaves public posts without usable embed
+  data.
+- MP4 and photo downloads can complete with missing or temporarily unavailable
+  embed metadata.
+- Windows metadata embedding and timestamp handling are more resilient to
+  unsupported or missing media metadata.
+
 ## [1.4.0] - 2026-08-26
 
 ### Added
@@ -79,7 +111,8 @@ All notable changes to `tt-dlp` are documented here. The project follows
 
 - Empty authenticated scans of public profiles retry without cookies.
 
-[Unreleased]: https://github.com/bajaam/tt-dlp/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/bajaam/tt-dlp/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/bajaam/tt-dlp/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/bajaam/tt-dlp/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/bajaam/tt-dlp/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/bajaam/tt-dlp/compare/v1.1.4...v1.3.0

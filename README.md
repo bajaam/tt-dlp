@@ -81,9 +81,21 @@ Preview filenames without downloading:
 tt-dlp --dry-run @profile_name
 ```
 
-Active stories are included automatically when a usable TikTok cookies file is
-configured. TikTok requires current cookies for profile Story lookup, even when
-the profile is public:
+### Active stories vs. Story archives
+
+`tt-dlp` currently downloads **currently active stories** and individual shared
+Story links. For a profile, active stories are discovered through TikTok's
+authenticated Story-item feed and are separate from the creator's regular
+posts.
+
+`tt-dlp` does **not** currently fetch a profile's historical Story archive.
+TikTok does not expose expired stories through the active story feed or the
+regular post feed; expired/archive stories are not retained as downloadable
+items by the current implementation. If TikTok exposes a direct URL for a
+Story that is still available, `tt-dlp` can download that individual item.
+
+Because the active Story endpoint may require a login, configure a usable
+TikTok cookies file for profile Story lookup:
 
 ```bash
 tt-dlp --cookies /path/to/cookies.txt @profile_name
