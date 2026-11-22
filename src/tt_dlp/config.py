@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from argparse import Namespace
@@ -33,6 +34,16 @@ def user_config_directory() -> Path:
     configured = os.environ.get("XDG_CONFIG_HOME")
     if configured:
         return Path(configured).expanduser() / "tt-dlp"
+    app_data = os.environ.get("APPDATA")
+    if sys.platform == "win32" and app_data:
+        return Path(app_data) / "tt-dlp"
+    if sys.platform == "darwin":
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "tt-dlp"
+        )
     return Path.home() / ".config" / "tt-dlp"
 
 
@@ -49,7 +60,9 @@ def discover_config(args: Namespace) -> Path | None:
     ]
     app_data = os.environ.get("APPDATA")
     if app_data:
-        candidates.append(Path(app_data) / "tt-dlp" / "config.json")
+        app_config = Path(app_data) / "tt-dlp" / "config.json"
+        if app_config not in candidates:
+            candidates.append(app_config)
     if sys.platform == "darwin":
         candidates.append(
             Path.home() / "Library" / "Application Support"
@@ -63,7 +76,8 @@ def _load_config(path: Path | None, *, required: bool) -> dict:
         if required:
             raise TikTokError(
                 "No config file or queue targets were found. Run "
-                "'tt-dlp --init-config ~/.config/tt-dlp/config.json'."
+                "'tt-dlp --init-config' to create a per-user config, or "
+                "pass targets on the command line."
             )
         return {}
     path = path.expanduser().resolve()
@@ -96,12 +110,15 @@ def _config_bool(config: dict, name: str, default: bool) -> bool:
 
 def _config_number(config: dict, name: str, default, number_type):
     value = config.get(name, default)
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TikTokError(f"Config value {name!r} must be a number")
     try:
-        return number_type(value)
-    except (TypeError, ValueError) as exc:
+        converted = number_type(value)
+    except (OverflowError, TypeError, ValueError) as exc:
         raise TikTokError(f"Config value {name!r} must be a number") from exc
+    if number_type is int and isinstance(value, float) and not value.is_integer():
+        raise TikTokError(f"Config value {name!r} must be an integer")
+    return converted
 
 
 def _path_value(value, *, base: Path, name: str) -> Path | None:
@@ -176,6 +193,8 @@ def prepare_run(args: Namespace) -> tuple[Settings, list[str]]:
     )
     if limit < 0 or sleep < 0:
         raise TikTokError("Values for limit and sleep cannot be negative")
+    if not math.isfinite(sleep):
+        raise TikTokError("Value for sleep must be finite")
 
     overwrite = (
         args.overwrite
@@ -262,18 +281,23 @@ def initialize_config(filename: str | os.PathLike) -> int:
     if config_path.exists():
         raise TikTokError(f"Refusing to overwrite existing config: {config_path}")
 
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config = dict(DEFAULT_CONFIG)
-    with config_path.open("x", encoding="utf-8") as file:
-        json.dump(config, file, indent=2)
-        file.write("\n")
-    if not queue_path.exists():
-        with queue_path.open("x", encoding="utf-8") as file:
-            file.write(
-                "# Add one TikTok target per line.\n"
-                "# @profile_name\n"
-                "# ttid:1234567890123456789:MS4wLjABAAAA...\n"
-            )
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config = dict(DEFAULT_CONFIG)
+        with config_path.open("x", encoding="utf-8") as file:
+            json.dump(config, file, indent=2)
+            file.write("\n")
+        if not queue_path.exists():
+            with queue_path.open("x", encoding="utf-8") as file:
+                file.write(
+                    "# Add one TikTok target per line.\n"
+                    "# @profile_name\n"
+                    "# ttid:1234567890123456789:MS4wLjABAAAA...\n"
+                )
+    except OSError as exc:
+        raise TikTokError(
+            f"Could not initialize config at {config_path}: {exc}"
+        ) from exc
     print(f"Created config: {config_path}")
     print(f"Created queue:  {queue_path}")
     print("Add profiles to the queue, then run: tt-dlp")

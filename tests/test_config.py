@@ -35,6 +35,57 @@ class ConfigurationTests(unittest.TestCase):
         path.write_text(json.dumps(config), encoding="utf-8")
         return path
 
+    def test_windows_user_config_directory_uses_appdata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app_data = Path(directory) / "Roaming"
+            with (
+                patch.object(config_module.sys, "platform", "win32"),
+                patch.dict(
+                    os.environ,
+                    {"APPDATA": str(app_data), "XDG_CONFIG_HOME": ""},
+                    clear=False,
+                ),
+            ):
+                self.assertEqual(
+                    config_module.user_config_directory(),
+                    app_data / "tt-dlp",
+                )
+
+    def test_macos_user_config_directory_uses_application_support(self):
+        with (
+            patch.object(config_module.sys, "platform", "darwin"),
+            patch.dict(
+                os.environ,
+                {"APPDATA": "", "XDG_CONFIG_HOME": ""},
+                clear=False,
+            ),
+        ):
+            self.assertEqual(
+                config_module.user_config_directory(),
+                Path.home() / "Library" / "Application Support" / "tt-dlp",
+            )
+
+    def test_linux_user_config_directory_uses_xdg_default(self):
+        with (
+            patch.object(config_module.sys, "platform", "linux"),
+            patch.dict(
+                os.environ,
+                {"APPDATA": "", "XDG_CONFIG_HOME": ""},
+                clear=False,
+            ),
+        ):
+            self.assertEqual(
+                config_module.user_config_directory(),
+                Path.home() / ".config" / "tt-dlp",
+            )
+
+    def test_missing_config_error_uses_portable_setup_command(self):
+        with patch.object(config_module, "discover_config", return_value=None):
+            with self.assertRaisesRegex(
+                TikTokError, "tt-dlp --init-config.*pass targets"
+            ):
+                config_module.prepare_run(parse_args([]))
+
     def test_environment_config_settings_apply_to_explicit_target(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -182,6 +233,39 @@ class ConfigurationTests(unittest.TestCase):
             with self.assertRaisesRegex(TikTokError, "limit"):
                 config_module.prepare_run(args)
 
+    def test_limit_must_be_integral_and_sleep_must_be_finite(self):
+        for key, value in (
+            ("limit", 2.5),
+            ("sleep", float("inf")),
+            ("sleep", float("nan")),
+        ):
+            with self.subTest(key=key, value=value):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = self.write_config(
+                        Path(directory) / "config.json", **{key: value}
+                    )
+
+                    with self.assertRaisesRegex(TikTokError, key):
+                        config_module.prepare_run(parse_args([
+                            "--config", str(path), "profile",
+                        ]))
+
+        with self.assertRaisesRegex(TikTokError, "sleep"):
+            config_module.prepare_run(parse_args(["--sleep", "nan", "profile"]))
+
+    def test_numeric_config_values_must_be_json_numbers(self):
+        for key, value in (("limit", "3"), ("sleep", "1.5")):
+            with self.subTest(key=key):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = self.write_config(
+                        Path(directory) / "config.json", **{key: value}
+                    )
+
+                    with self.assertRaisesRegex(TikTokError, key):
+                        config_module.prepare_run(parse_args([
+                            "--config", str(path), "profile",
+                        ]))
+
     def test_cli_false_overrides_true_config_boolean(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self.write_config(
@@ -287,6 +371,14 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(data["identity_file"], "profiles.json")
             self.assertTrue(data["stories"])
             self.assertEqual(queue.read_text(encoding="utf-8"), "existing-profile\n")
+
+    def test_initialize_config_reports_filesystem_errors_cleanly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            blocker = Path(directory) / "not-a-directory"
+            blocker.write_text("blocker", encoding="utf-8")
+
+            with self.assertRaisesRegex(TikTokError, "Could not initialize"):
+                config_module.initialize_config(blocker / "config.json")
 
 
 if __name__ == "__main__":

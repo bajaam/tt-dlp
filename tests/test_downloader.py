@@ -1,4 +1,5 @@
 import io
+import http.client
 import os
 import sys
 import tempfile
@@ -14,7 +15,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from tt_dlp.downloader import TikTokDownloader
 from tt_dlp.errors import TikTokError
-from tt_dlp.models import MediaItem, ProfileIdentity, Settings
+from tt_dlp.models import (
+    DownloadOutcome,
+    DownloadSummary,
+    MediaItem,
+    ProfileIdentity,
+    Settings,
+)
 from tt_dlp.state import ProfileStore
 from tt_dlp.targets import parse_target
 
@@ -98,6 +105,16 @@ class DownloadArchiveTests(unittest.TestCase):
         )
 
         self.assertEqual(filename, "@example-240102030405.mp4")
+
+    def test_custom_template_protects_windows_reserved_filenames(self):
+        filename = TikTokDownloader._filename(
+            "123456",
+            "CON",
+            "mp4",
+            template="{description}.{ext}",
+        )
+
+        self.assertEqual(filename, "CON_.mp4")
 
     def test_custom_template_is_used_for_download_queue_names(self):
         timestamp = int(datetime(
@@ -464,6 +481,35 @@ class MediaResponseTests(unittest.TestCase):
             self.assertEqual(destination.read_bytes(), payload)
             self.assertFalse(temporary.exists())
 
+    def test_local_media_write_failure_is_fatal_not_retried(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            downloader = TikTokDownloader(
+                settings(root),
+                client=ResponseClient(b"\x00media", "video/mp4"),
+            )
+            item = MediaItem(
+                post_id="123456",
+                description="post",
+                video_urls=("https://cdn.example/video.mp4",),
+            )
+
+            with (
+                patch.object(Path, "open", side_effect=OSError("disk full")),
+                patch("tt_dlp.downloader.time.sleep") as sleep,
+            ):
+                with self.assertRaisesRegex(
+                    TikTokError, "Could not write temporary media file"
+                ):
+                    downloader._download_with_refresh(
+                        item,
+                        destination=root / "123456 post.mp4",
+                        index=None,
+                        referer=REFERER,
+                    )
+
+            sleep.assert_not_called()
+
     def test_failed_url_round_refreshes_same_item_before_succeeding(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -489,7 +535,7 @@ class MediaResponseTests(unittest.TestCase):
                 self.assertEqual(referer, REFERER)
                 attempted.append(url)
                 if "expired" in url:
-                    raise TikTokError("expired")
+                    raise http.client.IncompleteRead(b"partial", 100)
                 destination.write_bytes(b"ok")
 
             downloader._write_media = write
@@ -514,6 +560,113 @@ class MediaResponseTests(unittest.TestCase):
             ])
             self.assertEqual(client.refreshes, [("123456", False)])
             self.assertEqual(destination.read_bytes(), b"ok")
+
+    def test_media_retries_are_capped_after_five_retries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            class ExpiredClient(NoNetworkClient):
+                def __init__(self):
+                    self.refreshes = 0
+
+                def media_from_embed(self, post_id, *, is_story=False):
+                    self.refreshes += 1
+                    return MediaItem(
+                        post_id=post_id,
+                        description="expired",
+                        video_urls=("https://cdn.example/expired.mp4",),
+                        is_story=is_story,
+                    )
+
+            client = ExpiredClient()
+            downloader = TikTokDownloader(settings(root), client=client)
+            attempts = []
+
+            def expired(url, *args, **kwargs):
+                attempts.append(url)
+                raise TikTokError("permanently unavailable")
+
+            downloader._write_media = expired
+            with patch("tt_dlp.downloader.time.sleep") as sleep:
+                with self.assertRaisesRegex(TikTokError, "after 5 retries"):
+                    downloader._download_with_refresh(
+                        MediaItem(
+                            post_id="123456",
+                            description="post",
+                            video_urls=("https://cdn.example/expired.mp4",),
+                        ),
+                        destination=root / "123456 post.mp4",
+                        index=None,
+                        referer=REFERER,
+                    )
+
+            self.assertEqual(len(attempts), 6)
+            self.assertEqual(client.refreshes, 5)
+            self.assertEqual(sleep.call_count, 5)
+
+    def test_incomplete_photo_metadata_is_capped_after_five_retries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            partial = MediaItem(
+                post_id="123456",
+                description="partial",
+                image_urls=(("https://cdn.example/one.jpg",),),
+                image_count=2,
+            )
+
+            class PartialClient(NoNetworkClient):
+                def __init__(self):
+                    self.refreshes = 0
+
+                def media_from_embed(self, post_id, *, is_story=False):
+                    self.refreshes += 1
+                    return partial
+
+            client = PartialClient()
+            downloader = TikTokDownloader(
+                settings(Path(directory)), client=client
+            )
+            with patch("tt_dlp.downloader.time.sleep") as sleep:
+                with self.assertRaisesRegex(
+                    TikTokError, "remained incomplete after 5 retries"
+                ):
+                    downloader._refresh_incomplete_photo(partial)
+
+            self.assertEqual(client.refreshes, 5)
+            self.assertEqual(sleep.call_count, 4)
+
+    def test_photo_queue_continues_after_one_slide_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            downloader = TikTokDownloader(settings(root), client=NoNetworkClient())
+            attempted = []
+
+            def download_part(item, **kwargs):
+                index = kwargs["index"]
+                attempted.append(index)
+                if index == 1:
+                    raise TikTokError("slide unavailable")
+                return DownloadOutcome.DOWNLOADED
+
+            downloader._download_media_part = download_part
+            with patch("tt_dlp.downloader.sys.stderr", new_callable=io.StringIO) as error:
+                summary = downloader._download_item(
+                    MediaItem(
+                        post_id="123456",
+                        description="carousel",
+                        image_urls=(
+                            ("https://cdn.example/one.jpg",),
+                            ("https://cdn.example/two.jpg",),
+                        ),
+                        image_count=2,
+                    ),
+                    output=root,
+                    referer=REFERER,
+                )
+
+            self.assertEqual(attempted, [1, 2])
+            self.assertEqual(summary.failed, 1)
+            self.assertEqual(summary.downloaded, 1)
+            self.assertIn("slide unavailable", error.getvalue())
 
     def test_failed_mp4_refresh_reclassifies_carousel_as_images(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -837,6 +990,124 @@ class DownloaderIdentityTests(unittest.TestCase):
                 store.find(parse_target(f"userid:{USER_ID}")).directory,
                 "example",
             )
+
+    def test_recent_post_fallback_skips_unavailable_oldest_post(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            class RecentPostClient(NoNetworkClient):
+                has_cookies = False
+
+                def creator_data(self, username):
+                    return {
+                        "userInfo": {
+                            "uniqueId": username,
+                            "id": USER_ID,
+                            "privateAccount": False,
+                        },
+                        "videoList": [{"id": "111111"}, {"id": "222222"}],
+                    }
+
+                @staticmethod
+                def identity_from_creator(creator):
+                    user = creator["userInfo"]
+                    return ProfileIdentity(
+                        username=user["uniqueId"],
+                        user_id=user["id"],
+                    )
+
+                def media_from_embed(self, post_id, *, is_story=False):
+                    if post_id == "111111":
+                        raise TikTokError("post unavailable")
+                    return MediaItem(
+                        post_id=post_id,
+                        description="accessible post",
+                        video_urls=("https://cdn.example/post.mp4",),
+                        author=ProfileIdentity(
+                            username="example",
+                            user_id=USER_ID,
+                            sec_uid=SEC_UID,
+                        ),
+                    )
+
+                def collect_posts(self, sec_uid, **kwargs):
+                    return []
+
+            downloader = TikTokDownloader(
+                settings(root, identify=True),
+                client=RecentPostClient(),
+                profile_store=ProfileStore(None),
+            )
+
+            self.assertEqual(downloader.run("@example"), 0)
+
+    def test_profile_queue_continues_after_one_post_exhausts_retries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            class QueueClient(NoNetworkClient):
+                def creator_data(self, username):
+                    return {"userInfo": {
+                        "uniqueId": username,
+                        "id": USER_ID,
+                        "secUid": SEC_UID,
+                        "privateAccount": False,
+                    }, "videoList": []}
+
+                @staticmethod
+                def identity_from_creator(creator):
+                    user = creator["userInfo"]
+                    return ProfileIdentity(
+                        username=user["uniqueId"],
+                        user_id=user["id"],
+                        sec_uid=user["secUid"],
+                    )
+
+                def collect_posts(self, sec_uid, **kwargs):
+                    return [
+                        MediaItem(
+                            post_id="111111",
+                            description="fails",
+                            video_urls=("https://cdn.example/one.mp4",),
+                            author=ProfileIdentity(
+                                username="example",
+                                user_id=USER_ID,
+                                sec_uid=SEC_UID,
+                            ),
+                        ),
+                        MediaItem(
+                            post_id="222222",
+                            description="succeeds",
+                            video_urls=("https://cdn.example/two.mp4",),
+                            author=ProfileIdentity(
+                                username="example",
+                                user_id=USER_ID,
+                                sec_uid=SEC_UID,
+                            ),
+                        ),
+                    ]
+
+            downloader = TikTokDownloader(
+                settings(root),
+                client=QueueClient(),
+                profile_store=ProfileStore(None),
+            )
+            attempted = []
+
+            def download(item, **kwargs):
+                attempted.append(item.post_id)
+                if item.post_id == "111111":
+                    raise TikTokError("retries exhausted")
+                return DownloadSummary(downloaded=1)
+
+            downloader._download_item = download
+            errors = io.StringIO()
+            with patch("tt_dlp.downloader.sys.stderr", errors):
+                result = downloader.run("@example")
+
+            self.assertEqual(result, 1)
+            self.assertEqual(attempted, ["111111", "222222"])
+            self.assertIn("[failed] post 111111: retries exhausted", errors.getvalue())
 
     def test_profile_and_numeric_id_download_posts_without_active_stories(self):
         with tempfile.TemporaryDirectory() as directory:

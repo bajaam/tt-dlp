@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import http.client
 import os
 import random
 import re
@@ -26,7 +27,7 @@ from .models import (
     Target,
     TargetKind,
 )
-from .state import ProfileStore, safe_directory_name
+from .state import ProfileStore, safe_directory_name, safe_file_name
 from .targets import parse_target
 
 
@@ -35,6 +36,7 @@ EXTENSION_RE = re.compile(r"[a-z0-9]{1,5}")
 FILENAME_FIELDS = frozenset({
     "username", "timestamp", "post_id", "description", "ext", "index",
 })
+MAX_MEDIA_RETRIES = 5
 
 
 class _PhotoMetadataDiscovered(Exception):
@@ -46,6 +48,10 @@ class _PhotoMetadataDiscovered(Exception):
 
 
 class _MetadataEmbeddingError(TikTokError):
+    pass
+
+
+class _MediaWriteError(TikTokError):
     pass
 
 
@@ -171,17 +177,41 @@ class TikTokDownloader:
             )
 
         # Creator embeds usually expose the numeric ID but not secUid.  A
-        # recent post embed supplies both stable identifiers.
+        # recent post embed supplies both stable identifiers. Try every exposed
+        # post: the newest item may be deleted or inaccessible even while
+        # older posts remain available.
         if not identity.sec_uid and direct_item is None and recent:
-            seed_id = str(recent[0].get("id") or "")
-            if seed_id:
+            for value in recent:
+                seed_id = (
+                    str(value.get("id") or "")
+                    if isinstance(value, dict)
+                    else ""
+                )
+                if not seed_id:
+                    continue
                 try:
                     seed_item = self.client.media_from_embed(seed_id)
                 except TikTokError:
-                    seed_item = None
-                if seed_item and seed_item.author:
+                    continue
+                if seed_item.author:
                     identity = self._merge_identity(
                         identity, seed_item.author, authoritative=True
+                    )
+                    if identity.sec_uid:
+                        break
+
+        if lookup_username and not identity.sec_uid:
+            public_profile = getattr(
+                self.client, "public_profile_identity", None
+            )
+            if public_profile:
+                try:
+                    authenticated = public_profile(lookup_username)
+                except TikTokError:
+                    authenticated = None
+                if authenticated:
+                    identity = self._merge_identity(
+                        identity, authenticated, authoritative=True
                     )
 
         if (
@@ -258,7 +288,7 @@ class TikTokDownloader:
             profile_url = self._profile_url(identity, target)
         if direct_item is None:
             print(
-                f"Profile scan complete: {len(posts)} "
+                f"Profile scan finished: {len(posts)} "
                 f"{'post' if len(posts) == 1 else 'posts'} found."
             )
         else:
@@ -368,7 +398,13 @@ class TikTokDownloader:
                 )
             return 0
         if not self.settings.dry_run:
-            output.mkdir(parents=True, exist_ok=True)
+            try:
+                output.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise TikTokError(
+                    f"Could not create profile output directory {output}: "
+                    f"{exc}"
+                ) from exc
 
         if target.post_id:
             if direct_item is None:
@@ -388,19 +424,33 @@ class TikTokDownloader:
         )
         summary = DownloadSummary()
         for item in posts:
-            summary.add(self._download_item(
-                item,
-                output=output,
-                referer=profile_url,
-                username=identity.username,
-            ))
+            try:
+                summary.add(self._download_item(
+                    item,
+                    output=output,
+                    referer=profile_url,
+                    username=identity.username,
+                ))
+            except TikTokError as exc:
+                summary.record(DownloadOutcome.FAILED)
+                print(
+                    f"[failed] post {item.post_id}: {exc}",
+                    file=sys.stderr,
+                )
         for item in stories:
-            summary.add(self._download_item(
-                item,
-                output=output,
-                referer=profile_url,
-                username=identity.username,
-            ))
+            try:
+                summary.add(self._download_item(
+                    item,
+                    output=output,
+                    referer=profile_url,
+                    username=identity.username,
+                ))
+            except TikTokError as exc:
+                summary.record(DownloadOutcome.FAILED)
+                print(
+                    f"[failed] story {item.post_id}: {exc}",
+                    file=sys.stderr,
+                )
 
         print()
         print(
@@ -551,15 +601,23 @@ class TikTokDownloader:
                     username=username,
                     create_time=item.create_time,
                 )
-                outcome = self._download_media_part(
-                    item,
-                    output=output,
-                    destination_dir=destination_dir,
-                    filename=filename,
-                    index=index,
-                    referer=referer,
-                )
-                summary.record(outcome)
+                try:
+                    outcome = self._download_media_part(
+                        item,
+                        output=output,
+                        destination_dir=destination_dir,
+                        filename=filename,
+                        index=index,
+                        referer=referer,
+                    )
+                except TikTokError as exc:
+                    summary.record(DownloadOutcome.FAILED)
+                    print(
+                        f"[failed] photo {item.post_id}_{index:02d}: {exc}",
+                        file=sys.stderr,
+                    )
+                else:
+                    summary.record(outcome)
             return summary
 
         filename = self._filename(
@@ -618,6 +676,14 @@ class TikTokDownloader:
                 and len(current.image_urls) >= required_count
             ):
                 return current
+            if round_number >= MAX_MEDIA_RETRIES:
+                error = TikTokError(
+                    f"Photo metadata for {item.post_id} remained incomplete "
+                    f"after {MAX_MEDIA_RETRIES} retries: {last_error}"
+                )
+                if isinstance(last_error, Exception):
+                    raise error from last_error
+                raise error
             delay = max(5.0, self.settings.sleep * 2.0)
             delay += random.uniform(0.0, 1.0)
             print(
@@ -685,7 +751,12 @@ class TikTokDownloader:
             print(f"[dry-run] {destination.name}")
             return DownloadOutcome.PLANNED
 
-        destination_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            destination_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise TikTokError(
+                f"Could not create media directory {destination_dir}: {exc}"
+            ) from exc
         self._download_with_refresh(
             item,
             destination=destination,
@@ -745,18 +816,33 @@ class TikTokDownloader:
                         )
                     self.last_download_at = time.monotonic()
                     return
+                except _MediaWriteError:
+                    try:
+                        temporary.unlink()
+                    except FileNotFoundError:
+                        pass
+                    raise
                 except _MetadataEmbeddingError:
                     try:
                         temporary.unlink()
                     except FileNotFoundError:
                         pass
                     raise
-                except (OSError, TikTokError) as exc:
+                except (OSError, TikTokError, http.client.HTTPException) as exc:
                     last_error = exc
                     try:
                         temporary.unlink()
                     except FileNotFoundError:
                         pass
+
+            if round_number > MAX_MEDIA_RETRIES:
+                error = TikTokError(
+                    f"Media {item.post_id} failed after "
+                    f"{MAX_MEDIA_RETRIES} retries: {last_error}"
+                )
+                if isinstance(last_error, Exception):
+                    raise error from last_error
+                raise error
 
             # Signed CDN addresses can expire while a large profile is being
             # scanned. Refresh this exact item, but never advance the queue.
@@ -818,13 +904,24 @@ class TikTokDownloader:
                 )
             if not first:
                 raise TikTokError("TikTok CDN returned an empty response")
-            with temporary.open("wb") as output:
-                output.write(first)
-                while True:
-                    chunk = response.read(256 * 1024)
-                    if not chunk:
-                        break
-                    output.write(chunk)
+            try:
+                with temporary.open("wb") as output:
+                    output.write(first)
+                    while True:
+                        try:
+                            chunk = response.read(256 * 1024)
+                        except (OSError, http.client.HTTPException) as exc:
+                            raise TikTokError(
+                                f"TikTok CDN stream was interrupted: {exc}"
+                            ) from exc
+                        if not chunk:
+                            break
+                        output.write(chunk)
+            except OSError as exc:
+                raise _MediaWriteError(
+                    f"Could not write temporary media file {temporary}: "
+                    f"{exc}"
+                ) from exc
         if self.settings.embed_metadata:
             self._embed_creation_time(
                 temporary,
@@ -832,7 +929,12 @@ class TikTokDownloader:
                 create_time,
             )
             self._set_file_timestamps(temporary, create_time)
-        os.replace(temporary, destination)
+        try:
+            os.replace(temporary, destination)
+        except OSError as exc:
+            raise _MediaWriteError(
+                f"Could not move downloaded media to {destination}: {exc}"
+            ) from exc
 
     @staticmethod
     def _set_file_timestamps(path: Path, create_time: int | None) -> None:
@@ -1075,11 +1177,13 @@ class TikTokDownloader:
             if index is not None and "index" not in fields:
                 stem, suffix = os.path.splitext(filename)
                 filename = f"{stem}_{index:02d}{suffix}"
-            filename = INVALID_FILENAME_RE.sub("_", filename).strip(" .")
-            if filename in {"", ".", ".."}:
+            try:
+                return safe_file_name(filename)
+            except TikTokError as exc:
                 raise TikTokError(
                     "Filename template produced an invalid filename"
-                )
-            return filename
+                ) from exc
         suffix = f"_{index:02d}" if index is not None else ""
-        return f"{post_id}{suffix} {description}.{extension}"
+        return safe_file_name(
+            f"{post_id}{suffix} {description}.{extension}"
+        )

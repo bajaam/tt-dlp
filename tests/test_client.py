@@ -1,10 +1,12 @@
 import io
+import http.client
 import json
 import sys
 import unittest
 from contextlib import redirect_stdout
 from http.cookiejar import Cookie
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
 
 
@@ -55,6 +57,18 @@ class ClientNormalizationTests(unittest.TestCase):
             ("https://cdn.example/two.webp",),
         ))
         self.assertTrue(item.is_photo)
+
+    def test_media_addresses_reject_non_http_schemes_and_userinfo(self):
+        urls = TikTokClient._address_urls({
+            "urlList": [
+                "file:///C:/Windows/win.ini",
+                "javascript:alert(1)",
+                "https://user:pass@cdn.example/video.mp4",
+                "https://cdn.example/video.mp4",
+            ],
+        })
+
+        self.assertEqual(urls, ["https://cdn.example/video.mp4"])
 
     def test_embed_display_images_are_normalized(self):
         item = TikTokClient.normalize_item({
@@ -234,6 +248,60 @@ class ClientNormalizationTests(unittest.TestCase):
             sec_uid=SEC_UID,
         ))
 
+    def test_post_page_fallback_tries_authenticated_request_after_anonymous_error(self):
+        client = TikTokClient(settings())
+        requested = []
+        item_data = {
+            "id": "123456",
+            "desc": "post page media",
+            "video": {},
+            "author": {
+                "uniqueId": "example",
+                "id": USER_ID,
+                "secUid": SEC_UID,
+            },
+        }
+        page = (
+            '<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">'
+            + json.dumps({
+                "__DEFAULT_SCOPE__": {
+                    "webapp.video-detail": {
+                        "itemInfo": {"itemStruct": item_data},
+                    },
+                },
+            })
+            + "</script>"
+        )
+
+        class PageResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            @staticmethod
+            def read():
+                return page.encode()
+
+        def request(url, *, anonymous):
+            requested.append((url, anonymous))
+            if anonymous:
+                raise http.client.IncompleteRead(b"partial", 100)
+            return PageResponse()
+
+        client.request = request
+        item = client.media_from_video_page("123456")
+
+        self.assertEqual(
+            requested,
+            [
+                ("https://www.tiktok.com/@_/video/123456", True),
+                ("https://www.tiktok.com/@_/video/123456", False),
+            ],
+        )
+        self.assertEqual(item.author.sec_uid, SEC_UID)
+
     def test_video_urls_are_quality_ordered_and_deduplicated(self):
         urls = TikTokClient.video_urls({
             "bitrateInfo": [
@@ -357,6 +425,47 @@ class ClientPaginationTests(unittest.TestCase):
         self.assertEqual(posts, [resolved])
         self.assertEqual(refreshed, [("123456", {})])
 
+    def test_unavailable_creator_embed_item_does_not_discard_api_posts(self):
+        client = TikTokClient(settings())
+        available = MediaItem(
+            post_id="123456",
+            description="available",
+            video_urls=("https://cdn.example/available.mp4",),
+        )
+        client._scan_posts = lambda *args, **kwargs: [available]
+
+        def unavailable(post_id, **kwargs):
+            raise TikTokError(f"post {post_id} unavailable")
+
+        client.media_from_embed = unavailable
+        posts = client.collect_posts(
+            SEC_UID,
+            profile_url="https://www.tiktok.com/@example",
+            recent=[{"id": "999999"}],
+        )
+
+        self.assertEqual(posts, [available])
+
+    def test_malformed_creator_embed_item_does_not_discard_api_posts(self):
+        client = TikTokClient(settings())
+        available = MediaItem(
+            post_id="123456",
+            description="available",
+            video_urls=("https://cdn.example/available.mp4",),
+        )
+        client._scan_posts = lambda *args, **kwargs: [available]
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            posts = client.collect_posts(
+                SEC_UID,
+                profile_url="https://www.tiktok.com/@example",
+                recent=[{"id": "bad-id"}],
+            )
+
+        self.assertEqual(posts, [available])
+        self.assertIn("malformed creator-embed", output.getvalue())
+
     def test_foreign_author_in_profile_page_is_rejected(self):
         client = TikTokClient(settings())
         client._request_json_api = lambda *args, **kwargs: {
@@ -406,8 +515,49 @@ class ClientPaginationTests(unittest.TestCase):
         self.assertEqual(posts, [])
         self.assertEqual(len(calls), 3)
         self.assertIn("Stopping pagination", output.getvalue())
+        self.assertIn("older posts may be missing", output.getvalue())
         self.assertGreater(calls[0][1], calls[1][1])
         self.assertGreater(calls[1][1], calls[2][1])
+
+    def test_empty_page_retries_explain_that_api_still_reports_more_items(self):
+        client = TikTokClient(settings())
+        calls = []
+
+        class EmptyResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            @staticmethod
+            def read():
+                return b'{"itemList":[],"hasMorePrevious":true}'
+
+        def request(url, **kwargs):
+            calls.append((url, kwargs))
+            return EmptyResponse()
+
+        client.request = request
+        output = io.StringIO()
+        with (
+            patch("tt_dlp.client.time.sleep"),
+            redirect_stdout(output),
+        ):
+            data = client._request_json_api(
+                "/api/creator/item_list/",
+                {"cursor": "123"},
+                profile_url="https://www.tiktok.com/@example",
+                label="TikTok profile API",
+                retry_empty=True,
+            )
+
+        self.assertEqual(data["itemList"], [])
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(
+            output.getvalue().count("returned an empty page"),
+            3,
+        )
 
     def test_oldest_timestamp_is_used_instead_of_list_order(self):
         client = TikTokClient(settings())
@@ -586,6 +736,35 @@ class ClientStoryTests(unittest.TestCase):
 
 
 class ClientSafetyTests(unittest.TestCase):
+    def test_public_profile_identity_requires_an_exact_username_match(self):
+        page = (
+            '<script type="application/json">'
+            + json.dumps({
+                "other": {
+                    "uniqueId": "example_backup",
+                    "id": "987654321",
+                    "secUid": "MS4wLjABAAAAzyxwvutsrqponmlk",
+                },
+                "profile": {
+                    "uniqueId": "example",
+                    "id": USER_ID,
+                    "secUid": SEC_UID,
+                },
+            })
+            + "</script>"
+        )
+
+        identity = TikTokClient.profile_identity_from_page(page, "example")
+
+        self.assertEqual(identity, ProfileIdentity(
+            username="example",
+            user_id=USER_ID,
+            sec_uid=SEC_UID,
+        ))
+        self.assertIsNone(
+            TikTokClient.profile_identity_from_page(page, "not_the_profile")
+        )
+
     def test_only_tiktok_domain_cookies_enable_authenticated_requests(self):
         client = TikTokClient(settings())
 

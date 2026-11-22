@@ -5,6 +5,37 @@ All notable changes to `tt-dlp` are documented here. The project follows
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-11-22
+
+### Changed
+
+- Default config and profile-store locations now follow Windows AppData,
+  macOS Application Support, and XDG/Linux conventions.
+- Installation instructions now use virtual environments and document the Git
+  prerequisite for installing from GitHub.
+- CI now tests the minimum and latest supported Python versions on Windows and
+  macOS.
+
+### Fixed
+
+- Username resolution now tries older creator-embed posts and public profile
+  state when the newest post cannot provide a stable identity.
+- Malformed or unavailable creator-embed posts no longer discard accessible
+  profile API results, and interrupted HTTP media reads are retried.
+- Page-data fallback retries with cookies after anonymous requests fail.
+- Interrupted media transfers are retried, while local disk write failures are
+  reported immediately instead of being mistaken for expired CDN links.
+- Media and incomplete photo metadata retries are capped at five; exhausted
+  items are reported while the remaining profile queue continues.
+- Invalid numeric config types, fractional post limits, and non-finite sleep
+  values are rejected before a run starts.
+- Failed profile-store writes leave in-memory state unchanged, and config
+  initialization reports filesystem errors without an unhandled traceback.
+- Media URLs reject non-HTTP schemes and credentials, and generated Windows
+  paths avoid reserved device names.
+- Missing-config guidance now uses the portable `--init-config` command
+  instead of prescribing a Linux-specific path.
+
 ## [1.5.0] - 2026-11-19
 
 ### Added

@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from tt_dlp.errors import TikTokError
 from tt_dlp.models import ProfileIdentity
-from tt_dlp.state import ProfileStore, safe_directory_name
+from tt_dlp.state import ProfileStore, safe_directory_name, safe_file_name
 from tt_dlp.targets import parse_target
 
 
@@ -94,6 +94,21 @@ class ProfileStoreTests(unittest.TestCase):
         ))
 
         self.assertEqual(store.find(parse_target(f"secuid:{SEC_UID}")), saved)
+
+    def test_failed_save_does_not_change_in_memory_profiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            blocker = Path(directory) / "not-a-directory"
+            blocker.write_text("blocker", encoding="utf-8")
+            store = ProfileStore(blocker / "profiles.json")
+
+            with self.assertRaisesRegex(TikTokError, "Could not update"):
+                store.update(ProfileIdentity(
+                    username="example",
+                    user_id=USER_ID,
+                    sec_uid=SEC_UID,
+                ))
+
+            self.assertIsNone(store.find(parse_target(f"secuid:{SEC_UID}")))
 
     def test_corrupt_or_unsupported_state_is_rejected(self):
         invalid_documents = (
@@ -184,6 +199,8 @@ class SafeDirectoryTests(unittest.TestCase):
             safe_directory_name("..")
         self.assertEqual(safe_directory_name("CON"), "CON_")
         self.assertEqual(safe_directory_name("nul"), "nul_")
+        self.assertEqual(safe_directory_name("CON.txt"), "CON_.txt")
+        self.assertEqual(safe_file_name("CON.mp4"), "CON_.mp4")
 
 
 if __name__ == "__main__":

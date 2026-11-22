@@ -10,7 +10,7 @@ import re
 import time
 from http.cookiejar import CookieJar, MozillaCookieJar
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 from .errors import TikTokError
@@ -132,7 +132,12 @@ class TikTokClient:
                     exc.close()
                 except (OSError, ValueError):
                     pass
-            except (URLError, TimeoutError, OSError) as exc:
+            except (
+                URLError,
+                TimeoutError,
+                OSError,
+                http.client.HTTPException,
+            ) as exc:
                 last_error = str(exc)
 
             if attempt < attempts:
@@ -151,9 +156,26 @@ class TikTokClient:
         ) as response:
             return response.geturl()
 
+    def _read_page(
+        self,
+        url: str,
+        *,
+        anonymous: bool = False,
+        label: str = "TikTok page",
+    ) -> str:
+        try:
+            with self.request(url, anonymous=anonymous) as response:
+                return response.read().decode("utf-8", "replace")
+        except (OSError, http.client.HTTPException) as exc:
+            raise TikTokError(
+                f"{label} response was interrupted: {exc}"
+            ) from exc
+
     def embed_data(self, path: str) -> dict:
-        with self.request(ROOT + path) as response:
-            page = response.read().decode("utf-8", "replace")
+        page = self._read_page(
+            ROOT + path,
+            label=f"TikTok embed {path}",
+        )
         match = STATE_RE.search(page)
         if not match:
             raise TikTokError(f"TikTok embed data was missing for {path}")
@@ -216,16 +238,28 @@ class TikTokClient:
         """Read media and author metadata from TikTok's rendered post page."""
         path = f"/@_/video/{post_id}"
         match = None
+        last_error = None
+        received_page = False
         for anonymous in (True, False):
-            with self.request(
-                ROOT + path,
-                anonymous=anonymous,
-            ) as response:
-                page = response.read().decode("utf-8", "replace")
+            try:
+                page = self._read_page(
+                    ROOT + path,
+                    anonymous=anonymous,
+                    label=f"TikTok post page {post_id}",
+                )
+            except TikTokError as exc:
+                last_error = exc
+                continue
+            received_page = True
             match = UNIVERSAL_STATE_RE.search(page)
             if match:
                 break
         if not match:
+            if not received_page and last_error:
+                raise TikTokError(
+                    f"TikTok post page requests failed for {post_id}: "
+                    f"{last_error}"
+                ) from last_error
             raise TikTokError(
                 f"TikTok post page data was missing for {post_id}"
             )
@@ -383,24 +417,40 @@ class TikTokClient:
     @staticmethod
     def _address_urls(value) -> list[str]:
         if isinstance(value, str):
-            return [value]
-        if isinstance(value, (list, tuple)):
-            return list(dict.fromkeys(
+            values = [value]
+        elif isinstance(value, (list, tuple)):
+            values = list(dict.fromkeys(
                 str(url) for url in value if isinstance(url, str) and url
             ))
-        if not isinstance(value, dict):
+        elif isinstance(value, dict):
+            urls = (
+                value.get("urlList")
+                or value.get("UrlList")
+                or value.get("urls")
+                or ()
+            )
+            if isinstance(urls, str):
+                urls = [urls]
+            values = list(dict.fromkeys(
+                str(url) for url in urls if isinstance(url, str) and url
+            ))
+        else:
             return []
-        urls = (
-            value.get("urlList")
-            or value.get("UrlList")
-            or value.get("urls")
-            or ()
-        )
-        if isinstance(urls, str):
-            urls = [urls]
-        return list(dict.fromkeys(
-            str(url) for url in urls if isinstance(url, str) and url
-        ))
+
+        valid = []
+        for url in values:
+            try:
+                parsed = urlsplit(url)
+            except ValueError:
+                continue
+            if (
+                parsed.scheme.lower() in {"http", "https"}
+                and parsed.netloc
+                and not parsed.username
+                and not parsed.password
+            ):
+                valid.append(url)
+        return valid
 
     @classmethod
     def video_urls(cls, video: dict) -> list[str]:
@@ -455,17 +505,22 @@ class TikTokClient:
             )
 
         fallback: list[MediaItem] = []
-        fallback_errors: list[str] = []
+        malformed_fallback: list[str] = []
         if isinstance(recent, (list, tuple)):
             for value in recent:
                 try:
                     fallback.append(self.normalize_item(value))
                 except TikTokError as exc:
-                    fallback_errors.append(str(exc))
-        if fallback_errors:
+                    malformed_fallback.append(str(exc))
+        if malformed_fallback and not posts and not fallback:
             raise TikTokError(
                 "TikTok's creator embed returned malformed post metadata: "
-                + fallback_errors[0]
+                + malformed_fallback[0]
+            )
+        if malformed_fallback:
+            print(
+                f"Skipping {len(malformed_fallback)} malformed creator-embed "
+                "item(s)."
             )
         if not posts and fallback:
             print(
@@ -479,10 +534,15 @@ class TikTokClient:
         canonical = {item.post_id: item for item in posts}
         merged: list[MediaItem] = []
         seen: set[str] = set()
+        unresolved_fallback: list[TikTokError] = []
         for fallback_item in fallback:
             item = canonical.get(fallback_item.post_id)
             if item is None:
-                item = self.media_from_embed(fallback_item.post_id)
+                try:
+                    item = self.media_from_embed(fallback_item.post_id)
+                except TikTokError as exc:
+                    unresolved_fallback.append(exc)
+                    continue
             if item.post_id not in seen:
                 seen.add(item.post_id)
                 merged.append(item)
@@ -490,6 +550,16 @@ class TikTokClient:
             if item.post_id not in seen:
                 seen.add(item.post_id)
                 merged.append(item)
+        if not merged and unresolved_fallback:
+            raise TikTokError(
+                "TikTok could not resolve any posts exposed by the creator "
+                f"embed: {unresolved_fallback[0]}"
+            ) from unresolved_fallback[0]
+        if unresolved_fallback:
+            print(
+                f"Skipping {len(unresolved_fallback)} unavailable "
+                "creator-embed post(s); retaining accessible posts."
+            )
         return merged
 
     def _scan_posts(
@@ -572,7 +642,8 @@ class TikTokClient:
                 break
             if empty_pages >= 3:
                 print(
-                    "Stopping pagination after 3 consecutive empty pages."
+                    "Stopping pagination after 3 consecutive empty pages; "
+                    "older posts may be missing."
                 )
                 break
 
@@ -670,7 +741,14 @@ class TikTokClient:
                     and data.get("hasMorePrevious")
                     and attempt < 4
                 ):
-                    raise TikTokError("TikTok returned a transient empty page")
+                    delay = self._retry_delay(attempt)
+                    print(
+                        f"{label} returned an empty page while reporting "
+                        f"more items; retrying in {delay:.1f}s "
+                        f"({attempt}/4)"
+                    )
+                    time.sleep(delay)
+                    continue
                 return data
             except (OSError, ValueError, TikTokError, http.client.HTTPException) as exc:
                 last_error = exc
@@ -842,8 +920,31 @@ class TikTokClient:
     ) -> ProfileIdentity | None:
         """Extract an exact, structured identity from signed-in page JSON."""
         username = validate_username(username)
-        with self.request(f"{ROOT}/@{username}") as response:
-            page = response.read().decode("utf-8", "replace")
+        page = self._read_page(
+            f"{ROOT}/@{username}",
+            label=f"TikTok profile @{username}",
+        )
+        return self.profile_identity_from_page(page, username)
+
+    def public_profile_identity(
+        self,
+        username: str,
+    ) -> ProfileIdentity | None:
+        """Extract structured profile identity from public profile JSON."""
+        username = validate_username(username)
+        page = self._read_page(
+            f"{ROOT}/@{username}",
+            anonymous=True,
+            label=f"TikTok profile @{username}",
+        )
+        return self.profile_identity_from_page(page, username)
+
+    @classmethod
+    def profile_identity_from_page(
+        cls,
+        page: str,
+        username: str,
+    ) -> ProfileIdentity | None:
         scripts = re.findall(
             r"<script[^>]*>(.*?)</script>",
             page,
@@ -851,13 +952,13 @@ class TikTokClient:
         )
         for source in scripts:
             source = html.unescape(source.strip())
-            if not source or source[0] not in "[{":
+            if not source:
                 continue
             try:
                 value = json.loads(source)
             except ValueError:
                 continue
-            identity = self._find_exact_identity(value, username)
+            identity = cls._find_exact_identity(value, username)
             if identity:
                 return identity
         return None

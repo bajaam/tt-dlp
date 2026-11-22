@@ -23,14 +23,30 @@ WINDOWS_RESERVED_NAMES = {
 }
 
 
-def safe_directory_name(value: str) -> str:
-    """Return a single safe path component for a profile archive."""
+def _safe_component(value: str, *, label: str) -> str:
     value = INVALID_COMPONENT_RE.sub("_", str(value)).strip(" .")
     if not value or value in {".", ".."}:
-        raise TikTokError("TikTok returned an unsafe profile directory name")
-    if value.upper() in WINDOWS_RESERVED_NAMES:
-        value += "_"
+        raise TikTokError(f"TikTok returned an unsafe {label}")
+    stem = value.split(".", 1)[0].rstrip(" .")
+    if stem.upper() in WINDOWS_RESERVED_NAMES:
+        dot = value.find(".")
+        value = (
+            f"{value[:dot]}_{value[dot:]}"
+            if dot >= 0
+            else value + "_"
+        )
+    return value
+
+
+def safe_directory_name(value: str) -> str:
+    """Return a single safe path component for a profile archive."""
+    value = _safe_component(value, label="profile directory name")
     return value[:100].rstrip(" .")
+
+
+def safe_file_name(value: str) -> str:
+    """Return a single safe filename component on Windows and POSIX."""
+    return _safe_component(value, label="media filename")
 
 
 class ProfileStore:
@@ -234,11 +250,16 @@ class ProfileStore:
             directory=safe_directory_name(directory),
             aliases=tuple(sorted(aliases, key=str.lower)),
         )
+        previous_profiles = self._profiles.copy()
         if existing_index is None:
             self._profiles.append(updated)
         else:
             self._profiles[existing_index] = updated
-        self._save()
+        try:
+            self._save()
+        except TikTokError:
+            self._profiles = previous_profiles
+            raise
         return updated
 
     def _unique_directory(
@@ -274,7 +295,6 @@ class ProfileStore:
     def _save(self) -> None:
         if self.path is None:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "version": STATE_VERSION,
             "profiles": [
@@ -292,6 +312,7 @@ class ProfileStore:
         }
         temporary_path = None
         try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
                 "w",
                 encoding="utf-8",

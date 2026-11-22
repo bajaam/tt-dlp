@@ -7,8 +7,9 @@ videos, photo carousels, and active stories. It can remember a creator's stable
 TikTok identity, so an existing queue and output folder continue to work after
 the creator changes their username.
 
-The application is written entirely with Python's standard library. It does
-not install, import, or run `yt-dlp` or `gallery-dl`.
+The application uses Python's standard library for its HTTP client, parsing,
+and queue workflows, plus Pillow and Mutagen for optional media metadata. It
+does not install, import, or run `yt-dlp` or `gallery-dl`.
 
 ## Features
 
@@ -18,7 +19,8 @@ not install, import, or run `yt-dlp` or `gallery-dl`.
 - Reads multiple targets from the command line, JSON config, or a text queue
 - Remembers username changes without splitting a creator's output directory
 - Skips completed files and uses `.part` files for interrupted downloads
-- Holds and retries the current media file instead of silently moving past it
+- Retries failed media up to five times, then reports the failure and continues
+  with remaining profile items
 - Supports authenticated access through an optional Netscape cookies file
 - Runs on Windows, Linux, and macOS with Python 3.10 or newer
 
@@ -28,20 +30,29 @@ future TikTok change may require an update to `tt-dlp`.
 ## Installation
 
 Install the current GitHub version directly.
+Git must be installed and available on your `PATH` to install from the GitHub
+URL.
 
-### Windows
+Using a virtual environment avoids conflicts with system-managed Python
+installations and keeps `tt-dlp`'s dependencies isolated.
+
+### Windows (PowerShell)
 
 ```powershell
-py -m pip install "git+https://github.com/bajaam/tt-dlp.git"
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install "git+https://github.com/bajaam/tt-dlp.git"
 ```
 
 ### Linux or macOS
 
 ```bash
-python3 -m pip install --user "git+https://github.com/bajaam/tt-dlp.git"
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install "git+https://github.com/bajaam/tt-dlp.git"
 ```
 
-Verify the command:
+Verify the command from the activated environment:
 
 ```bash
 tt-dlp --version
@@ -211,6 +222,8 @@ With no `--config`, `tt-dlp` checks the current directory and normal per-user
 config locations, including `~/.config/tt-dlp`, `%APPDATA%/tt-dlp` on Windows,
 and Application Support on macOS. Set `TT_DLP_CONFIG` to choose the automatic
 config path explicitly.
+`--init-config` and the default profile store use the platform's per-user
+config directory (or `XDG_CONFIG_HOME` when set).
 
 Explicit command-line targets still inherit settings such as output, cookies,
 sleep, and stories from the auto-discovered config. They replace the config's
@@ -335,8 +348,9 @@ python -m unittest discover -s tests -v
 python -m pip wheel --no-deps --wheel-dir dist .
 ```
 
-Tests run on Python 3.10 through 3.14, with Windows and macOS smoke coverage in
-GitHub Actions. Release history is recorded in [`CHANGELOG.md`](CHANGELOG.md).
+GitHub Actions tests Python 3.10 through 3.14 on Linux and tests the minimum
+and latest supported Python versions on Windows and macOS. Release history is
+recorded in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Responsible use
 
